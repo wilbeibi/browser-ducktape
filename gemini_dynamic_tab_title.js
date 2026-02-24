@@ -26,7 +26,7 @@
   function getActiveConversationTitle() {
     const path = location.pathname;
     const link = document.querySelector(
-      `[data-test-id="conversation"][href="${path}"]`
+      `[data-test-id="conversation"][href="${CSS.escape(path)}"]`
     );
     const titleEl = link?.querySelector('.conversation-title');
     return titleEl?.textContent?.trim() || '';

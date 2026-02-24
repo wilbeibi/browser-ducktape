@@ -12,15 +12,38 @@
 (function() {
     'use strict';
 
-    // Wait for the page to fully load
-    window.addEventListener('load', function() {
-        // Add a small delay to ensure GitHub's JS has finished running
-        setTimeout(addDeepWikiButton, 500);
+    let lastUrl = location.href;
+
+    function onPageChange() {
+        const currentUrl = location.href;
+        if (currentUrl !== lastUrl) {
+            lastUrl = currentUrl;
+            const old = document.querySelector('[aria-label="View on DeepWiki"]');
+            if (old) {
+                const li = old.closest('li');
+                if (li) li.remove(); else old.remove();
+            }
+        }
+        addDeepWikiButton();
+    }
+
+    let debounceTimer;
+    const observer = new MutationObserver(() => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(onPageChange, 300);
     });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => setTimeout(onPageChange, 500));
+    } else {
+        setTimeout(onPageChange, 500);
+    }
 
     function addDeepWikiButton() {
         // Run only on repository pages, not on other GitHub pages
         if (!isRepoPage()) return;
+        if (document.querySelector('[aria-label="View on DeepWiki"]')) return;
 
         // Extract username and repo name from URL
         const pathParts = window.location.pathname.split('/').filter(part => part);

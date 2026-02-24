@@ -1,42 +1,40 @@
-# 🛠️ browser-ducktape
+# Browser Ducktape 🦆
 
-> The web is broken. This is the duct tape that fixes it.
+A small collection of userscripts to patch up and improve your daily browsing experience.
 
-A collection of "quality of life" (QoL) userscripts designed to patch the holes in modern web design, boost your focus, and upgrade your browsing experience with AI-powered enhancements.
+These scripts run in your browser to fix annoyances, improve focus, or add missing features to sites like GitHub, YouTube, Claude, and more.
 
----
+## How to Use
 
-## 🏗️ The Toolkit
+1.  **Install a Userscript Manager**:
+    I recommend [Violentmonkey](https://violentmonkey.github.io/) (Open Source, lightweight).
+    -   [Chrome/Edge/Brave](https://chrome.google.com/webstore/detail/violentmonkey/jinjacmigcnfinphajbemlabodjabnV)
+    -   [Firefox](https://addons.mozilla.org/en-US/firefox/addon/violentmonkey/)
 
-### 🧠 [Accessibility](./accessibility)
-*   **ADHD-Friendly Line Highlighter:** Smart text highlighting that follows your cursor to help you stay focused on long-form content.
+2.  **Install a Script**:
+    -   Click on any `.js` file in this repository.
+    -   Click the **Raw** button.
+    -   Violentmonkey will automatically prompt you to install it.
 
-### 🤖 [AI Tools](./ai-tools)
-*   **Claude Usage Pace Indicator:** A visual budget for your Claude messages. See if you're "ahead" or "behind" the reset period.
-*   **Gemini Dynamic Tab Title:** Fixes Google Gemini's generic tab titles so you can actually find your chats.
-*   **Prompt Rewriter:** A power-user tool for rewriting and refining your AI prompts (requires a DeepSeek API key).
-*   **Translate to Chinese with AI:** High-quality text translation on any page using LLMs.
+## The Scripts
 
-### ⚡ [Productivity](./productivity)
-*   **Video Watch Confirmation:** A "digital mindfulness" tool. Asks if you *really* need to watch that video on YouTube or Bilibili before the player starts.
-*   **Bilibili Time Reminder:** Cumulative time tracking for Bilibili to prevent rabbit-hole sessions.
-*   **GitHub to DeepWiki Link:** Adds a direct shortcut from GitHub repos to their DeepWiki analysis page.
+### 🧠 Focus & Accessibility
+-   **`adhd_reader.js`**: Adds a "reading ruler" that highlights the line under your cursor. Great for keeping your place and improving focus on long articles.
+    ![Reading Ruler Demo](screenshots/highlight.png)
 
-### 📊 [Data Extraction](./data-extraction)
-*   **YouTube Transcript Downloader:** Adds a one-click button to download transcripts directly from the YouTube panel.
-*   **NeetCode to Jupytext:** Export NeetCode problems and solutions directly to Markdown/Jupyter format for offline study.
+-   **`worth_watching.js`**: A gentle intervention for YouTube and Bilibili. Blurs the video player and asks "Is this video really worth your time?" to prevent doomscrolling.
 
----
+### 🤖 AI Tools
+-   **`claude_usage_pace.js`**: Visualizes your Claude.ai usage limits. Adds a pace marker to the progress bar so you know if you're burning through messages too fast.
+    ![Claude Usage Pace Demo](screenshots/pacer.png)
 
-## 🚀 How to Install
+-   **`gemini_dynamic_tab_title.js`**: Automatically updates your browser tab title to match the current Gemini conversation, making it easier to find the right tab.
 
-1.  **Install a Userscript Manager:**
-    *   [Tampermonkey](https://www.tampermonkey.net/) (Recommended)
-    *   [Violentmonkey](https://violentmonkey.github.io/)
-2.  **Click on the script file (.js) in this repo.**
-3.  **View the "Raw" file**—your manager should automatically ask to install it.
+### 🛠️ Utilities
+-   **`deepwiki_on_github.js`**: Adds a quick link to DeepWiki on GitHub repository pages, helping you find better documentation faster.
+    ![DeepWiki on GitHub Demo](screenshots/deepwiki.png)
 
----
+-   **`youtube_transcript_downloader.js`**: Adds a simple download button to the YouTube transcript panel. One click to save the full text.
 
-## 🎨 Theme
-These scripts aren't "perfect apps." They are hacks. They are patches. They are **browser-ducktape**. If it works, it sticks.
+## Contributing
+Feel free to open an issue or PR if you have a fix or a new script idea!

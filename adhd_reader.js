@@ -1,18 +1,27 @@
 // ==UserScript==
 // @name         ADHD-Friendly Line Highlighter (Enhanced)
 // @namespace    http://tampermonkey.net/
-// @version      5.1
-// @description  Highlights the text line under your cursor for better reading focus. Smart detection, performance optimized.
+// @version      5.6
+// @description  Highlights the text line under your cursor for better reading focus.
 // @author       Enhanced Version
 // @match        *://*/*
 // @exclude      *://*.bilibili.com/*
 // @exclude      *://bilibili.com/*
+// @exclude      *://*.youtube.com/*
+// @exclude      *://*.reddit.com/*
+// @exclude      *://*.twitter.com/*
+// @exclude      *://*.x.com/*
+// @exclude      *://*.facebook.com/*
+// @exclude      *://*.instagram.com/*
+// @exclude      *://*.discord.com/*
+// @exclude      *://*.netflix.com/*
+// @exclude      *://*.spotify.com/*
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @require      https://cdn.jsdelivr.net/npm/defuddle@0.6.6/dist/index.js
 // @run-at       document-end
-// @require      https://cdn.jsdelivr.net/npm/@mozilla/readability@0.5.0/Readability.min.js
 // ==/UserScript==
 
 (function () {
@@ -23,20 +32,16 @@
         enabled: true,
         highlightColor: 'rgba(135, 206, 250, 0.3)',
         lineHeight: 1.5,
-        minParagraphLength: 50,  // Lowered for better detection
-        minParagraphCount: 2,     // Lowered for better detection
-        minTotalText: 500,        // Lowered for better detection
+        minTotalText: 200,        // Min visible characters on page to activate
         smoothTransition: true,
         verticalPadding: 2,
         showToggleButton: true,
         keyboardShortcut: 'Alt+H',
         persistentHighlight: false,
-        debugMode: false,         // New debug mode
-        detectionSensitivity: 50, // Article detection threshold (0-100)
+        debugMode: false,
         excludedSites: [],        // User-managed site exclusions (hostnames or patterns)
-        // Performance settings
-        throttleMs: 16, // ~60fps max
-        debounceMs: 100 // Delay before hiding on mouse stop
+        throttleMs: 16,           // ~60fps max
+        debounceMs: 100           // Delay before hiding on mouse stop
     };
 
     const COLOR_PRESETS = {
@@ -93,11 +98,6 @@
             this.rectCache = new Map();
             this.lastCacheTime = 0;
             this.cacheTimeout = 100; // ms
-
-            // Readability caching to avoid heavy recomputation
-            this.readabilityCache = null;
-            this.readabilityCacheTime = 0;
-            this.readabilityCacheTTL = 5000; // ms
         }
 
         loadConfig() {
@@ -122,11 +122,6 @@
         clearCaches() {
             this.rectCache.clear();
             this.lastCacheTime = 0;
-        }
-
-        invalidateReadability() {
-            this.readabilityCache = null;
-            this.readabilityCacheTime = 0;
         }
 
         getCachedRect(element) {
@@ -198,20 +193,21 @@
                 top: 50%;
                 left: 50%;
                 transform: translate(-50%, -50%);
-                background: white;
+                background: #fff;
                 padding: 20px;
                 border-radius: 8px;
                 box-shadow: 0 4px 20px rgba(0,0,0,0.3);
                 z-index: 1000000;
                 max-width: 400px;
+                width: 90%;
                 display: none;
                 font-family: Arial, sans-serif;
                 color: #333;
             }
-            .adhd-settings-panel h3 { margin-top: 0; }
+            .adhd-settings-panel h3 { margin-top: 0; color: #333; }
             .adhd-settings-panel label { display: block; margin: 10px 0; color: #555; }
             .adhd-settings-panel input[type="range"] { width: 100%; }
-            .adhd-settings-panel select { width: 100%; padding: 5px; margin-top: 5px; }
+            .adhd-settings-panel select { width: 100%; padding: 5px; margin-top: 5px; background: #fff; color: #333; border: 1px solid #ccc; }
             .adhd-settings-panel button {
                 margin: 5px;
                 padding: 8px 16px;
@@ -232,18 +228,61 @@
                 vertical-align: middle;
                 margin-left: 10px;
             }
+            @media (prefers-color-scheme: dark) {
+                .adhd-settings-panel {
+                    background: #1e1e1e;
+                    color: #e0e0e0;
+                    box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+                }
+                .adhd-settings-panel h3 { color: #e0e0e0; }
+                .adhd-settings-panel label { color: #bbb; }
+                .adhd-settings-panel select { background: #2d2d2d; color: #e0e0e0; border-color: #555; }
+                .adhd-settings-panel small { color: #888 !important; }
+                .adhd-excluded-sites-list { border-color: #555; }
+            }
+            .adhd-settings-backdrop {
+                position: fixed;
+                inset: 0;
+                background: rgba(0,0,0,0.4);
+                z-index: 999999;
+                display: none;
+            }
+            .adhd-settings-backdrop.visible { display: block; }
+            .adhd-excluded-sites-list {
+                max-height: 100px;
+                overflow-y: auto;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 4px;
+                margin-top: 4px;
+                font-size: 13px;
+            }
+            .adhd-excluded-site-item {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 2px 4px;
+            }
+            .adhd-excluded-site-item button {
+                margin: 0;
+                padding: 1px 6px;
+                font-size: 11px;
+                background-color: #f44336;
+            }
             .adhd-flash-message {
                 position: fixed;
-                top: 20px;
+                bottom: 65px;
                 right: 20px;
-                padding: 10px 20px;
-                background-color: #333;
+                padding: 7px 14px;
+                background-color: rgba(30,30,30,0.92);
                 color: white;
-                border-radius: 4px;
+                border-radius: 6px;
                 font-family: Arial, sans-serif;
-                z-index: 1000000;
+                font-size: 13px;
+                z-index: 1000001;
                 opacity: 0;
-                transition: opacity 0.3s ease;
+                transition: opacity 0.2s ease;
+                white-space: nowrap;
             }
             .adhd-flash-message.show { opacity: 1; }
         `);
@@ -279,7 +318,11 @@
             button.style.display = this.state.config.showToggleButton ? 'flex' : 'none';
 
             button.addEventListener('click', () => {
-                if (window.adhdHighlighter) {
+                if (!window.adhdHighlighter) return;
+                if (!window.adhdHighlighter.state.articleLike) {
+                    // On non-article pages, click opens settings instead
+                    this.showSettings();
+                } else {
                     window.adhdHighlighter.toggle();
                 }
             });
@@ -301,13 +344,16 @@
             button.classList.toggle('disabled', !this.state.articleLike);
             button.classList.toggle('active', this.state.config.enabled && this.state.articleLike);
 
-            // Update tooltip
+            // Update icon and tooltip based on state
             if (!this.state.articleLike) {
-                button.title = 'ADHD Highlighter (Not available on this page)';
+                button.innerHTML = '📄';
+                button.title = 'ADHD Highlighter (Not available on this page — right-click for settings)';
             } else if (this.state.config.enabled) {
-                button.title = 'ADHD Highlighter Active (Click to disable, Right-click for settings)';
+                button.innerHTML = '🔆';
+                button.title = 'ADHD Highlighter Active (Click to disable, right-click for settings)';
             } else {
-                button.title = 'ADHD Highlighter Inactive (Click to enable, Right-click for settings)';
+                button.innerHTML = '📖';
+                button.title = 'ADHD Highlighter Inactive (Click to enable, right-click for settings)';
             }
 
             button.style.display = this.state.config.showToggleButton ? 'flex' : 'none';
@@ -315,6 +361,14 @@
 
         createSettingsPanel() {
             if (this.state.settingsPanel) return;
+
+            // Create backdrop
+            const backdrop = document.createElement('div');
+            backdrop.className = 'adhd-settings-backdrop';
+            backdrop.addEventListener('click', () => this.hideSettings());
+            document.body.appendChild(backdrop);
+            this.state.settingsBackdrop = backdrop;
+
             const panel = document.createElement('div');
             panel.className = 'adhd-settings-panel';
             panel.innerHTML = this.getSettingsHTML();
@@ -360,17 +414,15 @@
                     Debug mode (console logs)
                 </label>
                 <label>
-                    Minimum paragraphs to activate:
-                    <input type="number" id="adhd-min-paragraphs" min="1" max="10" value="${this.state.config.minParagraphCount}">
+                    Minimum visible text to activate (chars):
+                    <input type="number" id="adhd-min-total" min="0" max="5000" value="${this.state.config.minTotalText}">
+                    <small style="color: #666;">Set to 0 to activate on every page</small>
                 </label>
                 <label>
-                    Minimum total text chars:
-                    <input type="number" id="adhd-min-total" min="200" max="20000" value="${this.state.config.minTotalText}">
-                </label>
-                <label>
-                    Article detection sensitivity: <span id="adhd-sensitivity-value">${this.state.config.detectionSensitivity}</span>
-                    <input type="range" id="adhd-sensitivity" min="10" max="90" value="${this.state.config.detectionSensitivity}">
-                    <small style="color: #666;">Lower = more sites, Higher = only clear articles</small>
+                    Excluded sites:
+                    <div class="adhd-excluded-sites-list" id="adhd-excluded-sites">
+                        ${this.getExcludedSitesHTML()}
+                    </div>
                 </label>
                 <div style="margin-top:20px;text-align:center;">
                     <button class="adhd-settings-save">Save</button>
@@ -381,7 +433,19 @@
         }
 
         getOpacityPercent() {
-            return Math.round((parseFloat(this.state.config.highlightColor.split(',')[3]) || 0.3) * 100);
+            const m = this.state.config.highlightColor.match(/rgba?\(\d+,\s*\d+,\s*\d+,\s*([\d.]+)\)/);
+            return Math.round((m ? parseFloat(m[1]) : 0.3) * 100);
+        }
+
+        getExcludedSitesHTML() {
+            const list = Array.isArray(this.state.config.excludedSites) ? this.state.config.excludedSites : [];
+            if (list.length === 0) return '<span style="color:#999;font-size:12px;">No excluded sites</span>';
+            return list.map((site, i) =>
+                `<div class="adhd-excluded-site-item">
+                    <span>${escapeHtml(site)}</span>
+                    <button class="adhd-remove-site" data-index="${i}">Remove</button>
+                </div>`
+            ).join('');
         }
 
         bindSettingsEvents() {
@@ -392,9 +456,6 @@
             const opacityValue = panel.querySelector('#adhd-opacity-value');
             const paddingSlider = panel.querySelector('#adhd-padding');
             const paddingValue = panel.querySelector('#adhd-padding-value');
-            const sensitivitySlider = panel.querySelector('#adhd-sensitivity');
-            const sensitivityValue = panel.querySelector('#adhd-sensitivity-value');
-
             const updateColorPreview = () => {
                 const baseColor = colorPreset.value;
                 const opacity = opacitySlider.value / 100;
@@ -412,10 +473,6 @@
             paddingSlider.addEventListener('input', () => {
                 paddingValue.textContent = `${paddingSlider.value}px`;
             });
-            sensitivitySlider.addEventListener('input', () => {
-                sensitivityValue.textContent = sensitivitySlider.value;
-            });
-
             updateColorPreview();
 
             panel.querySelector('.adhd-settings-save').addEventListener('click', () => this.saveSettings());
@@ -425,6 +482,17 @@
                     this.state.resetConfig();
                     location.reload();
                 }
+            });
+
+            // Remove excluded site buttons (delegated)
+            panel.querySelector('#adhd-excluded-sites').addEventListener('click', (e) => {
+                const btn = e.target.closest('.adhd-remove-site');
+                if (!btn) return;
+                const idx = parseInt(btn.dataset.index, 10);
+                const list = Array.isArray(this.state.config.excludedSites) ? [...this.state.config.excludedSites] : [];
+                list.splice(idx, 1);
+                this.state.saveConfig({ excludedSites: list });
+                panel.querySelector('#adhd-excluded-sites').innerHTML = this.getExcludedSitesHTML();
             });
         }
 
@@ -444,9 +512,7 @@
                 persistentHighlight: panel.querySelector('#adhd-persistent').checked,
                 showToggleButton: panel.querySelector('#adhd-show-button').checked,
                 debugMode: panel.querySelector('#adhd-debug-mode').checked,
-                minParagraphCount: parseInt(panel.querySelector('#adhd-min-paragraphs').value),
-                minTotalText: parseInt(panel.querySelector('#adhd-min-total').value),
-                detectionSensitivity: parseInt(panel.querySelector('#adhd-sensitivity').value)
+                minTotalText: parseInt(panel.querySelector('#adhd-min-total').value)
             };
 
             this.state.saveConfig(updates);
@@ -457,11 +523,34 @@
         }
 
         showSettings() {
+            // Re-render so panel reflects current config values
+            this.state.settingsPanel.innerHTML = this.getSettingsHTML();
+            this.bindSettingsEvents();
+
+            if (this.state.settingsBackdrop) {
+                this.state.settingsBackdrop.classList.add('visible');
+            }
             this.state.settingsPanel.style.display = 'block';
+
+            // Escape key to close
+            if (this._escapeHandler) {
+                document.removeEventListener('keydown', this._escapeHandler);
+            }
+            this._escapeHandler = (e) => {
+                if (e.key === 'Escape') this.hideSettings();
+            };
+            document.addEventListener('keydown', this._escapeHandler);
         }
 
         hideSettings() {
             this.state.settingsPanel.style.display = 'none';
+            if (this.state.settingsBackdrop) {
+                this.state.settingsBackdrop.classList.remove('visible');
+            }
+            if (this._escapeHandler) {
+                document.removeEventListener('keydown', this._escapeHandler);
+                this._escapeHandler = null;
+            }
         }
 
         showFlashMessage(msg) {
@@ -476,6 +565,29 @@
                 setTimeout(() => flash.remove(), 300);
             }, 2000);
         }
+    }
+
+    // Detect if the page itself renders with a dark background
+    function isPageDark() {
+        try {
+            // Check body first, fall back to html if body is transparent
+            for (const el of [document.body, document.documentElement]) {
+                const bg = window.getComputedStyle(el).backgroundColor;
+                const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+                if (!m) continue;
+                const alpha = m[4] !== undefined ? parseFloat(m[4]) : 1;
+                if (alpha < 0.1) continue; // transparent, try next element
+                const brightness = (parseInt(m[1], 10) * 299 + parseInt(m[2], 10) * 587 + parseInt(m[3], 10) * 114) / 1000;
+                return brightness < 128;
+            }
+        } catch {}
+        // Fallback to OS preference only if we can't determine from the page
+        return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+    }
+
+    // Helper: escape HTML special characters
+    function escapeHtml(str) {
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
     // Helper: hostname pattern match (supports exact, suffix, and "*.domain")
@@ -494,205 +606,10 @@
         return list.some(p => matchHostname(hostname, p));
     }
 
-    // Parse JSON-LD looking for Article-like objects
-    function hasJsonLdArticle() {
-        try {
-            const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-            const types = new Set(['Article', 'NewsArticle', 'BlogPosting', 'TechArticle', 'Report', 'HowTo']);
-
-            const seen = new WeakSet();
-            const checkNode = (node) => {
-                if (!node || typeof node !== 'object') return false;
-                if (seen.has(node)) return false;
-                seen.add(node);
-
-                if (Array.isArray(node)) {
-                    for (const item of node) {
-                        if (checkNode(item)) return true;
-                    }
-                    return false;
-                }
-
-                const t = node['@type'];
-                if (typeof t === 'string' && types.has(t)) return true;
-                if (Array.isArray(t) && t.some(v => types.has(v))) return true;
-
-                for (const key of Object.keys(node)) {
-                    const val = node[key];
-                    if (val && typeof val === 'object') {
-                        if (checkNode(val)) return true;
-                    }
-                }
-                return false;
-            };
-
-            for (const s of scripts) {
-                const text = s.textContent || '';
-                if (!text.trim()) continue;
-                try {
-                    const data = JSON.parse(text);
-                    if (checkNode(data)) return true;
-                } catch { }
-            }
-        } catch { }
-        return false;
-    }
-
-    // Identify a main content container to scope queries
-    function getMainContainer() {
-        return (
-            document.querySelector('article, main, [role="main"], .post-content, .entry-content, .ArticleBody, .post, .content, #content, #main') ||
-            document.body
-        );
-    }
-
-    // Compute simple content metrics within a container
-    function computeContentMetrics(container, config) {
-        const headings = container.querySelectorAll('h1, h2, h3, h4, h5, h6');
-        const paragraphs = container.querySelectorAll('p');
-
-        let longParagraphs = 0;
-        let totalTextLength = 0;
-        let maxParagraphLength = 0;
-        let linkText = 0;
-
-        for (const p of paragraphs) {
-            const text = p.textContent.trim();
-            const length = text.length;
-            totalTextLength += length;
-            if (length > maxParagraphLength) maxParagraphLength = length;
-            if (length >= config.minParagraphLength) longParagraphs++;
-
-            const links = p.querySelectorAll('a');
-            for (const a of links) linkText += (a.textContent || '').trim().length;
-        }
-
-        // Find a candidate large text block for density checks
-        const candidates = container.querySelectorAll('article, .post-content, .entry-content, .ArticleBody, .content, section, div');
-        let maxBlockText = 0;
-        let maxBlockLinks = 0;
-        for (const el of candidates) {
-            const role = (el.getAttribute('role') || '').toLowerCase();
-            if (role === 'navigation' || role === 'banner' || role === 'complementary') continue;
-            if (el.tagName === 'NAV' || el.tagName === 'ASIDE' || el.closest('nav, aside')) continue;
-
-            const txt = (el.innerText || '').trim();
-            const len = txt.length;
-            if (len > maxBlockText) {
-                maxBlockText = len;
-                maxBlockLinks = Array.from(el.querySelectorAll('a')).reduce((n, a) => n + ((a.innerText || '').trim().length), 0);
-            }
-        }
-
-        const linkDensity = totalTextLength > 0 ? (linkText / totalTextLength) : 1;
-        const maxBlockLinkDensity = maxBlockText > 0 ? (maxBlockLinks / maxBlockText) : 1;
-
-        return { headings, paragraphs, longParagraphs, totalTextLength, maxParagraphLength, linkDensity, maxBlockText, maxBlockLinkDensity };
-    }
-
-    function getReadabilityInsights(state) {
-        if (typeof window.Readability !== 'function') {
-            return null;
-        }
-
-        const now = Date.now();
-        if (state.readabilityCache && (now - state.readabilityCacheTime) < state.readabilityCacheTTL) {
-            return state.readabilityCache;
-        }
-
-        const result = { probable: true, success: false };
-        const checker = typeof window.isProbablyReaderable === 'function'
-            ? window.isProbablyReaderable
-            : (typeof window.Readability.isProbablyReaderable === 'function'
-                ? window.Readability.isProbablyReaderable.bind(window.Readability)
-                : null);
-
-        try {
-            if (checker) {
-                const probable = checker(document, {
-                    minContentLength: Math.max(200, state.config.minTotalText * 0.5),
-                    minScore: 45
-                });
-                result.probable = !!probable;
-                if (!probable) {
-                    result.success = false;
-                    state.readabilityCache = result;
-                    state.readabilityCacheTime = now;
-                    return result;
-                }
-            }
-
-            const clone = document.cloneNode(true);
-            const reader = new window.Readability(clone, { keepClasses: false });
-            const article = reader.parse();
-
-            if (!article) {
-                result.success = false;
-                state.readabilityCache = result;
-                state.readabilityCacheTime = now;
-                return result;
-            }
-
-            const textContent = (article.textContent || '').trim();
-            const textLength = textContent.length;
-
-            const insights = {
-                probable: result.probable !== undefined ? result.probable : true,
-                success: true,
-                textLength,
-                title: article.title || '',
-                byline: article.byline || '',
-                siteName: article.siteName || '',
-                quality: {
-                    paragraphs: 0,
-                    longParagraphs: 0,
-                    listItems: 0,
-                    codeBlocks: 0,
-                    linkCount: 0,
-                    sentenceCount: 0,
-                    averageParagraphLength: textLength
-                }
-            };
-
-            try {
-                const parser = new DOMParser();
-                const fragment = parser.parseFromString(article.content || '', 'text/html');
-                const paragraphs = Array.from(fragment.querySelectorAll('p'));
-                const longParagraphs = paragraphs.filter(p => p.textContent.trim().length >= state.config.minParagraphLength);
-                const sentences = textContent.split(/[.!?]+\s/).filter(s => s.trim().length > 3);
-
-                insights.quality.paragraphs = paragraphs.length;
-                insights.quality.longParagraphs = longParagraphs.length;
-                insights.quality.listItems = fragment.querySelectorAll('li').length;
-                insights.quality.codeBlocks = fragment.querySelectorAll('pre, code').length;
-                insights.quality.linkCount = fragment.querySelectorAll('a').length;
-                insights.quality.sentenceCount = sentences.length;
-                insights.quality.averageParagraphLength = paragraphs.length ? (textLength / paragraphs.length) : textLength;
-
-            } catch (parserError) {
-                if (state.config.debugMode) {
-                    console.log('ADHD Highlighter: Readability quality parse failed', parserError);
-                }
-            }
-
-            state.readabilityCache = insights;
-            state.readabilityCacheTime = now;
-            return insights;
-        } catch (error) {
-            if (state.config.debugMode) {
-                console.log('ADHD Highlighter: Readability analysis failed', error);
-            }
-            result.error = error;
-            state.readabilityCache = result;
-            state.readabilityCacheTime = now;
-            return result;
-        }
-    }
-
-    // Smart article detection - only activate on actual articles/documents
+    // Detect if the page has meaningful readable content using Defuddle.
+    // Defuddle works directly on `document` — no cloneNode needed (no perf cost).
     function isArticleLike(state) {
         const { config } = state;
-        const url = window.location.href.toLowerCase();
         const hostname = window.location.hostname.toLowerCase();
 
         if (isSiteExcluded(hostname, config)) {
@@ -700,171 +617,37 @@
             return false;
         }
 
-        const blacklistedSites = [
-            'reddit.com', 'twitter.com', 'x.com', 'facebook.com', 'instagram.com',
-            'youtube.com', 'tiktok.com', 'linkedin.com', 'pinterest.com',
-            'discord.com', 'slack.com', 'teams.microsoft.com',
-            'gmail.com', 'outlook.com', 'mail.google.com',
-            'amazon.com', 'ebay.com', 'alibaba.com', 'etsy.com',
-            'netflix.com', 'hulu.com', 'disney.com', 'spotify.com',
-            'bilibili.com', 'b23.tv',
-            'github.com/search', 'stackoverflow.com/questions',
-            'google.com', 'bing.com', 'duckduckgo.com', 'yahoo.com'
-        ];
+        // Skip pure app/canvas pages immediately
+        if (document.querySelector('[role="application"], canvas:only-child')) return false;
 
-        for (const site of blacklistedSites) {
-            if (hostname.includes(site)) {
-                if (config.debugMode) console.log('ADHD Highlighter: Blacklisted site:', site);
-                return false;
+        // Use Defuddle if available — no cloneNode, no layout reflow
+        if (typeof Defuddle !== 'undefined') {
+            try {
+                const result = new Defuddle(document).parse();
+                const textLen = (result && result.content ? result.content.replace(/<[^>]*>/g, '').length : 0);
+                const active = textLen >= config.minTotalText;
+                if (config.debugMode) console.log('ADHD Highlighter (Defuddle):', { textLen, threshold: config.minTotalText, active });
+                return active;
+            } catch (e) {
+                if (config.debugMode) console.warn('ADHD Highlighter: Defuddle failed, falling back', e);
             }
         }
 
-        const articleUrlPatterns = [
-            '/article/', '/post/', '/blog/', '/news/', '/story/', '/read/',
-            '/documentation/', '/docs/', '/wiki/', '/guide/', '/tutorial/',
-            '/help/', '/support/', '/manual/', '/reference/', '/learn/'
-        ];
-        const dateSlug = /(19|20)\d{2}[\/\-](0?[1-9]|1[0-2])[\/\-](0?[1-9]|[12][0-9]|3[01])|\/(19|20)\d{2}\//;
-        const hasArticleUrl = articleUrlPatterns.some(pattern => url.includes(pattern)) || dateSlug.test(url);
-
-        const articleSites = [
-            'medium.com', 'substack.com', 'wordpress.com', 'blogspot.com',
-            'ghost.io', 'hashnode.com', 'dev.to', 'hackernoon.com',
-            'wikipedia.org', 'wikimedia.org', 'wikibooks.org',
-            'mozilla.org', 'developer.mozilla.org', 'w3schools.com',
-            'stackoverflow.com/a/',
-            'github.com/blob', 'github.io', 'gitlab.com/blob', 'bitbucket.org',
-            'readthedocs.io', 'gitbook.io', 'notion.so',
-            'nytimes.com', 'washingtonpost.com', 'theguardian.com', 'bbc.com',
-            'reuters.com', 'ap.org', 'cnn.com', 'npr.org', 'pbs.org',
-            'techcrunch.com', 'arstechnica.com', 'wired.com', 'engadget.com',
-            'theverge.com', 'mashable.com', 'venturebeat.com'
-        ];
-        const isWhitelistedSite = articleSites.some(site => hostname.includes(site) || url.includes(site));
-
-        const readability = getReadabilityInsights(state);
-        if (readability && readability.probable === false) {
-            if (config.debugMode) console.log('ADHD Highlighter: Readability ruled out article');
-            return false;
-        }
-
-        const articleElements = document.querySelectorAll('article, [role="article"], .article, .post-content, .entry-content');
-        const hasSemanticArticle = articleElements.length > 0;
-
-        const hasAmp = !!document.querySelector('link[rel="amphtml"]');
-        const hasArticleMeta = (
-            document.querySelector('meta[property="og:type"][content*="article"]') ||
-            document.querySelector('meta[property^="article:"]') ||
-            document.querySelector('meta[name="article:author"]') ||
-            document.querySelector('meta[property="article:published_time"], meta[itemprop="datePublished"], time[datetime]') ||
-            hasJsonLdArticle()
-        );
-
-        const mainContent = getMainContainer();
-        const { headings, paragraphs, longParagraphs, totalTextLength, maxParagraphLength, linkDensity, maxBlockText, maxBlockLinkDensity } = computeContentMetrics(mainContent, config);
-
-        let score = 0;
-
-        if (readability) {
-            if (readability.success) {
-                const quality = readability.quality || {};
-                const paragraphsCount = quality.paragraphs || 0;
-                const longParagraphCount = quality.longParagraphs || 0;
-                const listItems = quality.listItems || 0;
-                const codeBlocks = quality.codeBlocks || 0;
-                const sentenceCount = quality.sentenceCount || 0;
-                const averageParagraphLength = quality.averageParagraphLength || 0;
-
-                const listRatio = paragraphsCount ? (listItems / paragraphsCount) : listItems;
-                const codeRatio = Math.max(longParagraphCount, paragraphsCount) ? (codeBlocks / Math.max(longParagraphCount, paragraphsCount)) : codeBlocks;
-
-                if (readability.textLength >= config.minTotalText) score += 35;
-                else if (readability.textLength >= config.minTotalText * 0.8) score += 20;
-
-                if (longParagraphCount >= Math.max(2, config.minParagraphCount)) score += 20;
-                if (sentenceCount >= Math.max(8, config.minParagraphCount * 3)) score += 10;
-                if (averageParagraphLength >= 80) score += 5;
-
-                if (listRatio > 5) score -= 15;
-                else if (listRatio > 3) score -= 8;
-
-                if (codeRatio > 4) score -= 15;
-                else if (codeRatio > 2.5) score -= 8;
-            } else {
-                score -= 5;
+        // Fallback: count textContent length across semantic elements — no layout reflow
+        let total = 0;
+        const paragraphs = document.querySelectorAll('p, article, main, [role="main"]');
+        for (const el of paragraphs) {
+            total += (el.textContent || '').length;
+            if (total >= config.minTotalText) {
+                if (config.debugMode) console.log('ADHD Highlighter: Active — enough text found (fallback)');
+                return true;
             }
         }
-
-        if (isWhitelistedSite) score += 25;
-        if (hasArticleUrl) score += 25;
-
-        if (hasSemanticArticle) score += 25;
-        if (hasArticleMeta) score += 25;
-        if (hasAmp) score += 10;
-
-        if (headings.length >= 2) score += 10;
-        if (headings.length >= 4) score += 10;
-
-        if (totalTextLength >= config.minTotalText) score += 20;
-        if (totalTextLength >= config.minTotalText * 2) score += 10;
-        if (longParagraphs >= config.minParagraphCount) score += 15;
-        if (maxParagraphLength >= 200) score += 10;
-
-        const hasReadingTime = document.querySelector('[class*="reading-time"], [data-reading-time], time[datetime]');
-        const hasAuthor = document.querySelector('.author, [class*="author"], [rel="author"], meta[name="author"]');
-        const hasDate = document.querySelector('time, .date, [class*="date"], [datetime], meta[property="article:published_time"], meta[itemprop="datePublished"]');
-
-        if (hasReadingTime) score += 10;
-        if (hasAuthor) score += 10;
-        if (hasDate) score += 5;
-
-        if (maxBlockText >= Math.max(800, config.minTotalText * 0.8)) score += 10;
-        if (linkDensity < 0.6) score += 5;
-        if (maxBlockLinkDensity < 0.5) score += 5;
-
-        const hasSocialElements = document.querySelectorAll('.vote, .upvote, .downvote, .like, .share, .retweet, .comment-count').length > 0;
-        if (hasSocialElements) score -= 15;
-
-        const hasListIndicators = mainContent.querySelectorAll('ul li a, .list-item, .search-result, .feed-item').length > 10;
-        if (hasListIndicators) score -= 20;
-
-        const isApplicationLike = !!document.querySelector('[role="application"], canvas, [data-reactroot], [data-nextjs]');
-        if (isApplicationLike) score -= 15;
-
-        const isArticle = score >= config.detectionSensitivity;
 
         if (config.debugMode) {
-            console.log('ADHD Highlighter: Article detection analysis:', {
-                url: url.substring(0, 100),
-                hostname,
-                score,
-                isArticle,
-                factors: {
-                    isWhitelistedSite,
-                    hasArticleUrl,
-                    hasSemanticArticle,
-                    hasArticleMeta: !!hasArticleMeta,
-                    hasAmp,
-                    headings: headings.length,
-                    paragraphs: paragraphs.length,
-                    longParagraphs,
-                    totalTextLength,
-                    maxParagraphLength,
-                    linkDensity,
-                    maxBlockText,
-                    maxBlockLinkDensity,
-                    readability,
-                    hasReadingTime: !!hasReadingTime,
-                    hasAuthor: !!hasAuthor,
-                    hasDate: !!hasDate,
-                    hasSocialElements,
-                    hasListIndicators,
-                    isApplicationLike
-                }
-            });
+            console.log('ADHD Highlighter: Inactive — not enough text', { total, threshold: config.minTotalText });
         }
-
-        return isArticle;
+        return false;
     }
 
     function getTextElementAt(x, y, state) {
@@ -1025,6 +808,11 @@
 
             this.ui.createHighlightDiv();
 
+            // Set blend mode based on actual page background, not OS preference
+            if (this.state.highlightDiv) {
+                this.state.highlightDiv.style.mixBlendMode = isPageDark() ? 'screen' : 'multiply';
+            }
+
             // Use passive listeners for performance where possible
             document.addEventListener('mousemove', this.boundHandleMouseMove, { passive: true });
             document.addEventListener('scroll', this.boundHandleScroll, { passive: true });
@@ -1134,18 +922,17 @@
         handleKeyboard(e) {
             const { keyboardShortcut } = this.state.config;
             const parts = keyboardShortcut.split('+');
-            const altRequired = parts.includes('Alt');
-            const ctrlRequired = parts.includes('Ctrl');
-            const shiftRequired = parts.includes('Shift');
+            const modifiers = new Set(parts.slice(0, -1).map(p => p.toLowerCase()));
             const key = parts[parts.length - 1].toLowerCase();
 
-            if (e.altKey === altRequired &&
-                e.ctrlKey === ctrlRequired &&
-                e.shiftKey === shiftRequired &&
-                e.key.toLowerCase() === key) {
-                e.preventDefault();
-                this.toggle();
-            }
+            if (e.altKey !== modifiers.has('alt')) return;
+            if (e.ctrlKey !== modifiers.has('ctrl')) return;
+            if (e.shiftKey !== modifiers.has('shift')) return;
+            if (e.metaKey !== (modifiers.has('meta') || modifiers.has('cmd'))) return;
+            if (e.key.toLowerCase() !== key) return;
+
+            e.preventDefault();
+            this.toggle();
         }
 
         handleMouseLeave() {
@@ -1184,7 +971,6 @@
 
         const state = new State();
         const hostname = window.location.hostname.toLowerCase();
-
         // If user has excluded this site, only register a simple enable command and exit early
         if (isSiteExcluded(hostname, state.config)) {
             GM_registerMenuCommand('Enable ADHD Highlighter on this site', () => {
@@ -1218,7 +1004,7 @@
         GM_registerMenuCommand('ADHD Highlighter Settings', () => ui.showSettings());
         GM_registerMenuCommand('Toggle ADHD Highlighter', () => highlighter.toggle());
         GM_registerMenuCommand('Debug Mode', () => {
-            state.config.debugMode = !state.config.debugMode;
+            state.saveConfig({ debugMode: !state.config.debugMode });
             console.log('ADHD Highlighter: Debug mode', state.config.debugMode ? 'enabled' : 'disabled');
         });
         GM_registerMenuCommand(`Disable on this site (${hostname})`, () => {
@@ -1227,11 +1013,9 @@
                 state.saveConfig({ excludedSites: [...list, hostname] });
             }
             // Deactivate immediately and hide UI
-            if (window.adhdHighlighter) {
-                try { window.adhdHighlighter.deactivate(); } catch {}
-            }
-            try { ui.toggleButton?.remove(); } catch {}
-            try { state.highlightDiv?.remove(); } catch {}
+            window.adhdHighlighter?.deactivate();
+            ui.toggleButton?.remove();
+            state.highlightDiv?.remove();
             ui.showFlashMessage('🚫 Disabled on this site');
         });
         GM_registerMenuCommand('Force Enable on This Site', () => {
@@ -1255,10 +1039,7 @@
         ui.updateToggleButton();
 
         // Throttled mutation observer for dynamic content
-        const throttledCheck = throttle(() => {
-            state.invalidateReadability();
-            highlighter.checkContentType();
-        }, 1000);
+        const throttledCheck = throttle(() => highlighter.checkContentType(), 1000);
 
         const observer = new MutationObserver(throttledCheck);
         observer.observe(document.body, {
