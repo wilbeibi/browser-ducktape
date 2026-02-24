@@ -32,7 +32,7 @@
         enabled: true,
         highlightColor: 'rgba(135, 206, 250, 0.3)',
         lineHeight: 1.5,
-        minTotalText: 200,        // Min visible characters on page to activate
+        minTotalText: 3000,       // ~2 min read — only highlight articles worth focusing on
         smoothTransition: true,
         verticalPadding: 2,
         showToggleButton: true,
@@ -633,21 +633,23 @@
             }
         }
 
-        // Fallback: count textContent length across semantic elements — no layout reflow
+        // Fallback: count text in actual paragraphs — short UI snippets don't count
         let total = 0;
+        let longParaCount = 0;
         const paragraphs = document.querySelectorAll('p, article, main, [role="main"]');
         for (const el of paragraphs) {
-            total += (el.textContent || '').length;
-            if (total >= config.minTotalText) {
-                if (config.debugMode) console.log('ADHD Highlighter: Active — enough text found (fallback)');
-                return true;
-            }
+            const len = (el.textContent || '').trim().length;
+            total += len;
+            if (el.tagName === 'P' && len >= 80) longParaCount++;
         }
 
+        // Need both: enough total text AND at least 3 real paragraphs
+        const active = total >= config.minTotalText && longParaCount >= 3;
+
         if (config.debugMode) {
-            console.log('ADHD Highlighter: Inactive — not enough text', { total, threshold: config.minTotalText });
+            console.log('ADHD Highlighter:', active ? 'Active' : 'Inactive', { total, longParaCount, threshold: config.minTotalText });
         }
-        return false;
+        return active;
     }
 
     function getTextElementAt(x, y, state) {
@@ -951,9 +953,10 @@
                     console.log('ADHD Highlighter: Content type changed -', isArticle ? 'Article detected' : 'Not an article');
                 }
 
-                if (isArticle && this.state.config.enabled) {
-                    this.activate();
-                } else if (!isArticle) {
+                if (isArticle) {
+                    this.ui.createToggleButton(); // show button if page became article-like (SPA nav)
+                    if (this.state.config.enabled) this.activate();
+                } else {
                     this.deactivate();
                 }
                 this.ui.updateToggleButton();
@@ -992,9 +995,8 @@
         window.adhdHighlighter = highlighter;
         window.adhdHighlighterState = state;
 
-        // Create UI components
+        // Create UI components — defer button until we know it's article-like
         try {
-            ui.createToggleButton();
             ui.createSettingsPanel();
         } catch (e) {
             console.error('ADHD Highlighter: Failed to create UI components:', e);
@@ -1031,10 +1033,13 @@
             }
         });
 
-        // Initial content check
+        // Initial content check — only show button on article-like pages
         state.articleLike = isArticleLike(state);
-        if (state.articleLike && state.config.enabled) {
-            highlighter.activate();
+        if (state.articleLike) {
+            ui.createToggleButton();
+            if (state.config.enabled) {
+                highlighter.activate();
+            }
         }
         ui.updateToggleButton();
 
