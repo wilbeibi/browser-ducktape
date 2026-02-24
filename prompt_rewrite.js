@@ -10,16 +10,23 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @connect      api.deepseek.com
+// @connect      *
 // @run-at       document-end
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    const API_KEY = String(GM_getValue('DEEPSEEK_API_KEY', '') || '').trim();
-    const API_URL = 'https://api.deepseek.com/chat/completions';
-    const MODEL = 'deepseek-chat';
+    const DEFAULT_URL   = 'https://api.deepseek.com/v1/chat/completions';
+    const DEFAULT_MODEL = 'deepseek-chat';
+
+    function getConfig() {
+        return {
+            key:   String(GM_getValue('API_KEY', '') || '').trim(),
+            url:   String(GM_getValue('API_URL', DEFAULT_URL) || '').trim(),
+            model: String(GM_getValue('MODEL', DEFAULT_MODEL) || '').trim(),
+        };
+    }
 
     // ==========================================
     // ENHANCEMENT SYSTEM PROMPT
@@ -140,7 +147,99 @@ Return ONLY the enhanced prompt, nothing else.`;
         background: rgba(100,200,100,0.12);
         border-color: rgba(100,200,100,0.3);
     }
-}`;
+}
+.pe-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 1000000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.pe-modal {
+    background: #fff;
+    border-radius: 10px;
+    padding: 24px;
+    width: 380px;
+    max-width: 90vw;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+    font-family: system-ui, sans-serif;
+}
+.pe-modal h3 {
+    margin: 0 0 16px;
+    font-size: 15px;
+    font-weight: 600;
+}
+.pe-modal label {
+    display: block;
+    font-size: 12px;
+    color: #555;
+    margin-bottom: 4px;
+}
+.pe-modal input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 7px 10px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 13px;
+    margin-bottom: 12px;
+}
+.pe-modal input:focus {
+    outline: none;
+    border-color: #7c7cff;
+}
+.pe-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
+}
+.pe-modal-actions button {
+    padding: 7px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    border: 1px solid #ccc;
+    background: #f5f5f5;
+}
+.pe-modal-actions button.primary {
+    background: #5c5cff;
+    color: #fff;
+    border-color: #5c5cff;
+}
+@media (prefers-color-scheme: dark) {
+    .pe-modal {
+        background: #1e1e1e;
+        color: #ddd;
+    }
+    .pe-modal label { color: #aaa; }
+    .pe-modal input {
+        background: #2a2a2a;
+        border-color: #444;
+        color: #ddd;
+    }
+    .pe-modal-actions button {
+        background: #2a2a2a;
+        border-color: #444;
+        color: #ddd;
+    }
+    .pe-modal-actions button.primary {
+        background: #5c5cff;
+        border-color: #5c5cff;
+        color: #fff;
+    }
+}
+.pe-test-status {
+    font-size: 12px;
+    margin-top: 8px;
+    min-height: 18px;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+.pe-test-status.ok  { background: rgba(46,125,50,0.12);  color: #2e7d32; }
+.pe-test-status.err { background: rgba(211,47,47,0.12);  color: #d32f2f; }`;
 
     // ==========================================
     // State
@@ -244,24 +343,13 @@ Return ONLY the enhanced prompt, nothing else.`;
     // ==========================================
     // API call
     // ==========================================
-    function callAPI(userPrompt) {
+    function sendRequest({ key, url, model, messages, max_tokens = 2048, timeout = 30000 }) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
-                method: 'POST',
-                url: API_URL,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Bearer ' + API_KEY
-                },
-                timeout: 30000,
-                data: JSON.stringify({
-                    model: MODEL,
-                    max_tokens: 2048,
-                    messages: [
-                        { role: 'system', content: SYSTEM_PROMPT },
-                        { role: 'user', content: userPrompt }
-                    ]
-                }),
+                method: 'POST', url,
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+                timeout,
+                data: JSON.stringify({ model, max_tokens, messages }),
                 onload(resp) {
                     try {
                         const data = JSON.parse(resp.responseText);
@@ -269,9 +357,7 @@ Return ONLY the enhanced prompt, nothing else.`;
                             reject(new Error(data?.error?.message || `HTTP ${resp.status}`));
                             return;
                         }
-                        const content = data.choices?.[0]?.message?.content?.trim();
-                        if (content) resolve(content);
-                        else reject(new Error('Empty response'));
+                        resolve(data);
                     } catch (e) {
                         reject(new Error('Failed to parse response'));
                     }
@@ -280,6 +366,102 @@ Return ONLY the enhanced prompt, nothing else.`;
                 ontimeout: () => reject(new Error('Request timed out'))
             });
         });
+    }
+
+    async function callAPI(userPrompt) {
+        const cfg = getConfig();
+        const data = await sendRequest({
+            ...cfg, max_tokens: 2048,
+            messages: [
+                { role: 'system', content: SYSTEM_PROMPT },
+                { role: 'user', content: userPrompt }
+            ]
+        });
+        const content = data.choices?.[0]?.message?.content?.trim();
+        if (!content) throw new Error('Empty response');
+        return content;
+    }
+
+    // ==========================================
+    // Settings modal
+    // ==========================================
+    function showSettingsModal(onSave) {
+        const overlay = document.createElement('div');
+        overlay.className = 'pe-overlay';
+        overlay.innerHTML = `
+            <div class="pe-modal">
+                <h3>Prompt Enhancer — Setup</h3>
+                <label>API Key *</label>
+                <input id="pe-api-key" type="password" placeholder="sk-...">
+                <label>API URL</label>
+                <input id="pe-api-url" type="text" placeholder="${DEFAULT_URL}">
+                <label>Model</label>
+                <input id="pe-model" type="text" placeholder="${DEFAULT_MODEL}">
+                <div id="pe-test-status" class="pe-test-status"></div>
+                <div class="pe-modal-actions">
+                    <button id="pe-cancel">Cancel</button>
+                    <button id="pe-test">Test</button>
+                    <button id="pe-save" class="primary">Save</button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+
+        // Set values safely (avoids HTML injection from stored values)
+        const keyInput   = overlay.querySelector('#pe-api-key');
+        const urlInput   = overlay.querySelector('#pe-api-url');
+        const modelInput = overlay.querySelector('#pe-model');
+        keyInput.value   = GM_getValue('API_KEY', '');
+        urlInput.value   = GM_getValue('API_URL', '');
+        modelInput.value = GM_getValue('MODEL', '');
+        keyInput.focus();
+
+        const status = overlay.querySelector('#pe-test-status');
+
+        function getModalValues() {
+            return {
+                key:   keyInput.value.trim(),
+                url:   urlInput.value.trim() || DEFAULT_URL,
+                model: modelInput.value.trim() || DEFAULT_MODEL,
+            };
+        }
+
+        overlay.querySelector('#pe-cancel').onclick = () => overlay.remove();
+
+        overlay.querySelector('#pe-test').onclick = async () => {
+            const vals = getModalValues();
+            if (!vals.key) { keyInput.style.borderColor = '#d32f2f'; return; }
+            const btn = overlay.querySelector('#pe-test');
+            btn.textContent = 'Testing…';
+            btn.disabled = true;
+            status.className = 'pe-test-status';
+            status.textContent = '';
+            try {
+                await sendRequest({
+                    ...vals, max_tokens: 8, timeout: 15000,
+                    messages: [{ role: 'user', content: 'hi' }]
+                });
+                status.className = 'pe-test-status ok';
+                status.textContent = '✓ Connection successful';
+            } catch (err) {
+                status.className = 'pe-test-status err';
+                status.textContent = '✗ ' + err.message;
+            } finally {
+                btn.textContent = 'Test';
+                btn.disabled = false;
+            }
+        };
+
+        overlay.querySelector('#pe-save').onclick = () => {
+            const vals = getModalValues();
+            if (!vals.key) { keyInput.style.borderColor = '#d32f2f'; return; }
+            GM_setValue('API_KEY', vals.key);
+            GM_setValue('API_URL', vals.url);
+            GM_setValue('MODEL', vals.model);
+            overlay.remove();
+            onSave();
+        };
+
+        overlay.addEventListener('keydown', e => { if (e.key === 'Escape') overlay.remove(); });
     }
 
     // ==========================================
@@ -303,9 +485,8 @@ Return ONLY the enhanced prompt, nothing else.`;
             showToast('Nothing to enhance', 'error');
             return;
         }
-        if (!API_KEY) {
-            showToast('Set API key: see console', 'error');
-            console.log('Run: GM_setValue("DEEPSEEK_API_KEY", "sk-...")');
+        if (!GM_getValue('API_KEY', '').trim()) {
+            showSettingsModal(() => handleClick(textarea, btn));
             return;
         }
 
