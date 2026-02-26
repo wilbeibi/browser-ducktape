@@ -15,8 +15,8 @@
   const TOLERANCE = 3; // ±% to count as "on pace"
   const POLL_MS = 2000;
 
-  // ── Parse "Resets Thu 3:00 PM" → { day, hour, minute } ────────────
-  function parseResetText(text) {
+  // ── Parse "Resets Thu 3:00 PM" → timePct via absolute day/time ─────
+  function weekTimePctAbsolute(text) {
     const m = text.match(
       /Resets?\s+(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i
     );
@@ -26,20 +26,30 @@
     const ampm = m[4].toUpperCase();
     if (ampm === 'PM' && hour !== 12) hour += 12;
     if (ampm === 'AM' && hour === 12) hour = 0;
-    return { day: dayMap[m[1]], hour, minute: parseInt(m[3], 10) };
-  }
-
-  // ── How far through the week cycle we are (local time) ─────────────
-  function weekTimePct(reset) {
-    if (!reset) return null;
+    const reset = { day: dayMap[m[1]], hour, minute: parseInt(m[3], 10) };
     const now = new Date();
     const nowMins =
       (now.getDay() * 1440 + now.getHours() * 60 + now.getMinutes()) +
       now.getSeconds() / 60;
     const resetMins = reset.day * 1440 + reset.hour * 60 + reset.minute;
     let elapsed = nowMins - resetMins;
-    if (elapsed < 0) elapsed += 10080; // 7 * 1440
+    if (elapsed < 0) elapsed += 10080;
     return Math.min(100, Math.max(0, (elapsed / 10080) * 100));
+  }
+
+  // ── Parse "Resets in 22 hr 4 min" → timePct via remaining time ─────
+  function weekTimePctRelative(text) {
+    const m = text.match(/Resets?\s+in\s+(?:(\d+)\s*hr\s*)?(?:(\d+)\s*min)?/i);
+    if (!m || (!m[1] && !m[2])) return null;
+    const hrs = parseInt(m[1] || '0', 10);
+    const mins = parseInt(m[2] || '0', 10);
+    const remaining = hrs * 60 + mins;
+    const elapsed = 10080 - remaining;
+    return Math.min(100, Math.max(0, (elapsed / 10080) * 100));
+  }
+
+  function getTimePct(text) {
+    return weekTimePctAbsolute(text) ?? weekTimePctRelative(text);
   }
 
   // ── Pace calculation ───────────────────────────────────────────────
@@ -85,24 +95,23 @@
     rows.forEach((row, idx) => {
       const text = row.innerText || '';
 
-      // Must have "Resets [Day] [Time]" and "X% used"
+      // Must have "X% used" and a parseable reset time
       const usageMatch = text.match(/(\d+)\s*%\s*used/i);
-      const resetMatch = parseResetText(text);
-      if (!usageMatch || !resetMatch) return;
+      if (!usageMatch) return;
+      const timePct = getTimePct(text);
+      if (timePct === null) return;
 
-      // Skip the "Current session" row (says "Resets in X hr Y min")
-      if (/resets\s+in\s+/i.test(text)) return;
+      // Skip "Current session" row (no day/time anchor, session-scoped)
+      const labelP = row.querySelector('p.text-text-100');
+      if (labelP && /session/i.test(labelP.textContent)) return;
 
       const usagePct = parseInt(usageMatch[1], 10);
-      const timePct = weekTimePct(resetMatch);
-      if (timePct === null) return;
 
       const p = pace(usagePct, timePct);
       found++;
 
       // ── 1. Badge next to the label ─────────────────────────────
-      // The label <p> is inside the left column: first <p> with text-text-100
-      const labelP = row.querySelector('p.text-text-100');
+      // labelP was already fetched above for the session skip check
       if (labelP) {
         const badgeId = `__pace_badge_${idx}`;
         let badge = document.getElementById(badgeId);
