@@ -155,7 +155,9 @@
         `;
         countdownTrack.appendChild(countdownFill);
 
-        const countdownTimer = setInterval(() => {
+        let countdownTimer = null;
+        const tick = () => {
+            if (document.hidden) return;
             remaining -= 1;
             if (remaining > 0) {
                 yesButton.textContent = `Yes (${remaining})`;
@@ -163,16 +165,27 @@
                 return;
             }
             clearInterval(countdownTimer);
+            document.removeEventListener('visibilitychange', onVisibilityChange);
             yesButton.disabled = false;
             yesButton.style.opacity = '1';
             yesButton.style.cursor = 'pointer';
             yesButton.textContent = 'Yes';
             yesButton.style.background = '#4CAF50';
             countdownTrack.style.display = 'none';
-        }, 1000);
+        };
+        const onVisibilityChange = () => {
+            if (!document.hidden) {
+                remaining = COUNTDOWN_SECONDS;
+                yesButton.textContent = `Yes (${remaining})`;
+                countdownFill.style.width = '100%';
+            }
+        };
+        document.addEventListener('visibilitychange', onVisibilityChange);
+        countdownTimer = setInterval(tick, 1000);
 
         const dismiss = (confirmed) => {
             clearInterval(countdownTimer);
+            document.removeEventListener('visibilitychange', onVisibilityChange);
             if (confirmed) {
                 markConfirmed();
                 cleanup();
