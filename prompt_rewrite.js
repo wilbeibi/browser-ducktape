@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Prompt Enhancer
 // @namespace    http://tampermonkey.net/
-// @version      4.0.0
+// @version      4.1.0
 // @description  One-click prompt enhancement for AI chat interfaces
 // @author       You
 // @match        https://claude.ai/*
 // @match        https://chatgpt.com/*
 // @match        https://gemini.google.com/*
+// @match        https://lobechat.*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -35,7 +36,7 @@
     const SYSTEM_PROMPT = `You are a prompt enhancement engine. Your job is to take a user's draft prompt and return a strictly better version.
 
 **Analysis (internal, do NOT output):**
-1. Detect the user's intent category: explain, compare, debug, review, research, document-analysis, or general.
+1. Detect the user's intent category: explain, compare, debug, review, research, plan, create, document-analysis, or general.
 2. Detect what's missing: context, constraints, output format, examples, success criteria.
 3. Detect language: respond in the same language as the input.
 
@@ -49,17 +50,19 @@
 - **Add success criteria:** What would make the answer "done" or "good enough"
 - **Preserve voice:** Keep the user's tone and intent. Don't over-formalize casual prompts.
 - **Keep it concise:** The enhanced prompt should be tighter, not longer for the sake of length.
+- **Socratic scaffolding:** For complex asks (explain, plan, analyze, create), restructure as a guided reasoning chain: first ask the model to identify key principles/dimensions, then probe assumptions or pitfalls, then produce the output grounded in that reasoning. This replaces flat imperatives with questions that force deeper thinking.
 
 **Category-specific enhancements (apply when detected):**
 
-For EXPLAIN prompts: Request definition → analogy → mechanism → example → misconceptions
-For COMPARE prompts: Request comparison table with dimensions, winner per dimension, recommendation by scenario
+For EXPLAIN prompts: Use Socratic scaffolding — "What core principles make [X] work? What are common misconceptions? How would you explain [key concept] using an everyday analogy? Now, using those insights, explain [X]."
+For COMPARE prompts: "What are the most important dimensions for evaluating [X vs Y]? What tradeoffs matter most in which scenarios?" Then request a comparison table with dimensions, winner per dimension, recommendation by scenario.
 For DEBUG prompts: Add repro steps structure, ranked causes, verification method per cause
 For REVIEW prompts: Request top risks, missing requirements, concrete fixes (not vague suggestions), verification plan
-For RESEARCH prompts: Require evidence-binding (every claim → source), confidence levels, recency preference
+For RESEARCH prompts: "What are the key claims about [X]? What evidence supports or contradicts each? What assumptions might be wrong?" Then require evidence-binding (every claim → source), confidence levels, recency preference.
+For PLAN/CREATE prompts: "What makes a great [X]? What are the common pitfalls? What are 2-3 strong counter-arguments to the obvious approach?" Then produce the output grounded in that reasoning.
 For DOCUMENT prompts: Request original claim → restatement → design motivation → assumptions → alternatives
 
-**Reflection suffix (only for DEBUG, REVIEW, RESEARCH prompts):**
+**Reflection suffix (only for DEBUG, REVIEW, RESEARCH, PLAN prompts):**
 For these categories only, append to the enhanced prompt:
 "Before answering, generate at least two objections to your initial reasoning, then respond to those objections."
 
@@ -258,6 +261,7 @@ Return ONLY the enhanced prompt, nothing else.`;
             'div#prompt-textarea[contenteditable="true"]',
             '.ql-editor.textarea.new-input-ui[contenteditable="true"]',
             '.ql-editor[contenteditable="true"][role="textbox"]',
+            '.cm-content[contenteditable="true"]',             // LobeChat (CodeMirror editor)
             '[contenteditable="true"][role="textbox"]',
             'rich-textarea [contenteditable]',
             '[contenteditable="true"][aria-label]'
@@ -291,14 +295,31 @@ Return ONLY the enhanced prompt, nothing else.`;
         return null;
     }
 
+    // CodeMirror helper: get EditorView from .cm-content or .cm-editor
+    function getCMView(el) {
+        const editor = el.closest('.cm-editor');
+        return editor?.cmView?.view || null;
+    }
+
     function getText(el) {
-        return el.tagName === 'TEXTAREA' ? el.value : el.innerText;
+        if (el.tagName === 'TEXTAREA') return el.value;
+        const view = getCMView(el);
+        if (view) return view.state.doc.toString();
+        return el.innerText;
     }
 
     function setText(el, text) {
         if (el.tagName === 'TEXTAREA') {
             el.value = text;
             el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+            return;
+        }
+        // CodeMirror: use EditorView API for proper state update
+        const view = getCMView(el);
+        if (view) {
+            view.dispatch({
+                changes: { from: 0, to: view.state.doc.length, insert: text }
+            });
             return;
         }
         // Try execCommand for undo-friendly insertion
@@ -388,34 +409,60 @@ Return ONLY the enhanced prompt, nothing else.`;
     function showSettingsModal(onSave) {
         const overlay = document.createElement('div');
         overlay.className = 'pe-overlay';
-        overlay.innerHTML = `
-            <div class="pe-modal">
-                <h3>Prompt Enhancer — Setup</h3>
-                <label>API Key *</label>
-                <input id="pe-api-key" type="password" placeholder="sk-...">
-                <label>API URL</label>
-                <input id="pe-api-url" type="text" placeholder="${DEFAULT_URL}">
-                <label>Model</label>
-                <input id="pe-model" type="text" placeholder="${DEFAULT_MODEL}">
-                <div id="pe-test-status" class="pe-test-status"></div>
-                <div class="pe-modal-actions">
-                    <button id="pe-cancel">Cancel</button>
-                    <button id="pe-test">Test</button>
-                    <button id="pe-save" class="primary">Save</button>
-                </div>
-            </div>`;
-        document.body.appendChild(overlay);
 
-        // Set values safely (avoids HTML injection from stored values)
-        const keyInput   = overlay.querySelector('#pe-api-key');
-        const urlInput   = overlay.querySelector('#pe-api-url');
-        const modelInput = overlay.querySelector('#pe-model');
+        const modal = document.createElement('div');
+        modal.className = 'pe-modal';
+
+        const h3 = document.createElement('h3');
+        h3.textContent = 'Prompt Enhancer \u2014 Setup';
+        modal.appendChild(h3);
+
+        function addField(labelText, id, type, placeholder) {
+            const label = document.createElement('label');
+            label.textContent = labelText;
+            modal.appendChild(label);
+            const input = document.createElement('input');
+            input.id = id;
+            input.type = type;
+            input.placeholder = placeholder;
+            modal.appendChild(input);
+            return input;
+        }
+
+        const keyInput   = addField('API Key *', 'pe-api-key', 'password', 'sk-...');
+        const urlInput   = addField('API URL', 'pe-api-url', 'text', DEFAULT_URL);
+        const modelInput = addField('Model', 'pe-model', 'text', DEFAULT_MODEL);
+
+        const statusDiv = document.createElement('div');
+        statusDiv.id = 'pe-test-status';
+        statusDiv.className = 'pe-test-status';
+        modal.appendChild(statusDiv);
+
+        const actions = document.createElement('div');
+        actions.className = 'pe-modal-actions';
+
+        function addBtn(id, text, cls) {
+            const b = document.createElement('button');
+            b.id = id;
+            b.textContent = text;
+            if (cls) b.className = cls;
+            actions.appendChild(b);
+            return b;
+        }
+
+        const cancelBtn = addBtn('pe-cancel', 'Cancel');
+        const testBtn  = addBtn('pe-test', 'Test');
+        const saveBtn  = addBtn('pe-save', 'Save', 'primary');
+
+        modal.appendChild(actions);
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
         keyInput.value   = GM_getValue('API_KEY', '');
         urlInput.value   = GM_getValue('API_URL', '');
         modelInput.value = GM_getValue('MODEL', '');
         keyInput.focus();
 
-        const status = overlay.querySelector('#pe-test-status');
+        const status = statusDiv;
 
         function getModalValues() {
             return {
@@ -425,14 +472,13 @@ Return ONLY the enhanced prompt, nothing else.`;
             };
         }
 
-        overlay.querySelector('#pe-cancel').onclick = () => overlay.remove();
+        cancelBtn.onclick = () => overlay.remove();
 
-        overlay.querySelector('#pe-test').onclick = async () => {
+        testBtn.onclick = async () => {
             const vals = getModalValues();
             if (!vals.key) { keyInput.style.borderColor = '#d32f2f'; return; }
-            const btn = overlay.querySelector('#pe-test');
-            btn.textContent = 'Testing…';
-            btn.disabled = true;
+            testBtn.textContent = 'Testing…';
+            testBtn.disabled = true;
             status.className = 'pe-test-status';
             status.textContent = '';
             try {
@@ -446,12 +492,12 @@ Return ONLY the enhanced prompt, nothing else.`;
                 status.className = 'pe-test-status err';
                 status.textContent = '✗ ' + err.message;
             } finally {
-                btn.textContent = 'Test';
-                btn.disabled = false;
+                testBtn.textContent = 'Test';
+                testBtn.disabled = false;
             }
         };
 
-        overlay.querySelector('#pe-save').onclick = () => {
+        saveBtn.onclick = () => {
             const vals = getModalValues();
             if (!vals.key) { keyInput.style.borderColor = '#d32f2f'; return; }
             GM_setValue('API_KEY', vals.key);
@@ -476,7 +522,6 @@ Return ONLY the enhanced prompt, nothing else.`;
             btn.classList.remove('has-undo');
             btn.textContent = '✨';
             btn.title = 'Enhance prompt (Ctrl+Shift+E)';
-            showToast('Reverted to original', 'info');
             return;
         }
 
@@ -503,7 +548,6 @@ Return ONLY the enhanced prompt, nothing else.`;
             btn.classList.add('has-undo');
             btn.textContent = '↩';
             btn.title = 'Undo — restore original prompt';
-            showToast('Prompt enhanced');
         } catch (err) {
             // Remove failed undo entry
             undoStack = undoStack.filter(u => u.el !== textarea);
@@ -528,6 +572,7 @@ Return ONLY the enhanced prompt, nothing else.`;
             'input-area-v2',
             '.input-area-container',
             '.text-input-field_textarea-wrapper',   // Gemini outer (overflow:hidden — last resort)
+            '.cm-editor',                          // LobeChat (CodeMirror)
         ];
         for (const sel of candidates) {
             const el = textarea.closest(sel);
