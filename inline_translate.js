@@ -827,8 +827,8 @@ html.llmtr-hide .llmtr { display: none; }
             badge.style.display = 'none';
         }
         fab.title = enabled
-            ? 'Hide translation (Alt+T) · right-click for settings'
-            : 'Translate page (Alt+T) · right-click for settings';
+            ? 'Hide translation (Ctrl+T) · right-click for settings'
+            : 'Translate page (Ctrl+T) · right-click for settings';
     }
 
     function makeFab() {
@@ -1159,7 +1159,7 @@ html.llmtr-hide .llmtr { display: none; }
         document.head.appendChild(style);
 
         document.addEventListener('keydown', (e) => {
-            if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyT') {
+            if (e.ctrlKey && !e.altKey && !e.metaKey && e.code === 'KeyT') {
                 const t = e.target;
                 if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
                 e.preventDefault();
@@ -1168,7 +1168,7 @@ html.llmtr-hide .llmtr { display: none; }
         });
 
         if (typeof GM_registerMenuCommand === 'function') {
-            GM_registerMenuCommand('Translate / toggle (Alt+T)', toggle);
+            GM_registerMenuCommand('Translate / toggle (Ctrl+T)', toggle);
             GM_registerMenuCommand('Settings', () => showSettingsModal(() => {}));
         }
 

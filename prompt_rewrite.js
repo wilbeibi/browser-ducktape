@@ -7,7 +7,7 @@
 // @match        https://claude.ai/*
 // @match        https://chatgpt.com/*
 // @match        https://gemini.google.com/*
-// @match        https://lobechat.*/*
+// @match        https://lobechat.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -646,11 +646,12 @@ Return ONLY the enhanced prompt, nothing else.`;
             bottom: inputRect.bottom - inset
         };
         const positions = [
-            { left: inputRect.right - btnWidth - inset, top: inputRect.top + inset },
-            { left: inputRect.left + inset, top: inputRect.top + inset },
-            { left: inputRect.left + inset, top: inputRect.bottom - btnHeight - inset },
             { left: inputRect.right - btnWidth - inset, top: inputRect.top - btnHeight - 6 },
-            { left: inputRect.left + inset, top: inputRect.top - btnHeight - 6 }
+            { left: inputRect.left + inset, top: inputRect.top - btnHeight - 6 },
+            { left: inputRect.right + 6, top: inputRect.top + inset },
+            { left: inputRect.left - btnWidth - 6, top: inputRect.top + inset },
+            { left: inputRect.right - btnWidth - inset, top: inputRect.bottom + 6 },
+            { left: inputRect.left + inset, top: inputRect.bottom + 6 },
         ];
 
         for (const obstacle of obstacles) {
