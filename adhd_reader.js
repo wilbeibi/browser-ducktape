@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ADHD-Friendly Line Highlighter (Enhanced)
 // @namespace    http://tampermonkey.net/
-// @version      5.6
-// @description  Highlights the text line under your cursor for better reading focus.
+// @version      5.7
+// @description  Highlights the text line under your cursor on text-dense article pages.
 // @author       Enhanced Version
 // @match        *://*/*
 // @exclude      *://*.bilibili.com/*
@@ -90,6 +90,7 @@
             this.settingsPanel = null;
             this.isActive = false;
             this.articleLike = false;
+            this.lastCheckedUrl = location.href;
             this.lastMouseX = 0;
             this.lastMouseY = 0;
 
@@ -606,8 +607,20 @@
         return list.some(p => matchHostname(hostname, p));
     }
 
-    // Detect if the page has meaningful readable content using Defuddle.
-    // Defuddle works directly on `document` — no cloneNode needed (no perf cost).
+    // A page only qualifies if it's text-dense: several real paragraphs
+    // AND enough total readable text. Feeds, dashboards, and app UIs fail
+    // the paragraph gate even when their scattered text adds up.
+    const MIN_LONG_PARAGRAPHS = 3;
+    const LONG_PARAGRAPH_CHARS = 80;
+
+    function countLongParagraphs() {
+        let count = 0;
+        for (const el of document.querySelectorAll('p, blockquote')) {
+            if ((el.textContent || '').trim().length >= LONG_PARAGRAPH_CHARS) count++;
+        }
+        return count;
+    }
+
     function isArticleLike(state) {
         const { config } = state;
         const hostname = window.location.hostname.toLowerCase();
@@ -620,34 +633,37 @@
         // Skip pure app/canvas pages immediately
         if (document.querySelector('[role="application"], canvas:only-child')) return false;
 
-        // Use Defuddle if available — no cloneNode, no layout reflow
+        // minTotalText of 0 means "activate on every page" — skip all gates
+        if (config.minTotalText === 0) return true;
+
+        // Cheap gate first: a real article has several long paragraphs
+        const longParaCount = countLongParagraphs();
+        if (longParaCount < MIN_LONG_PARAGRAPHS) {
+            if (config.debugMode) console.log('ADHD Highlighter: Too few paragraphs', { longParaCount, required: MIN_LONG_PARAGRAPHS });
+            return false;
+        }
+
+        // Measure readable text — Defuddle strips nav/comments/boilerplate.
+        // It works directly on `document`, no cloneNode needed.
+        let textLen = 0;
         if (typeof Defuddle !== 'undefined') {
             try {
                 const result = new Defuddle(document).parse();
-                const textLen = (result && result.content ? result.content.replace(/<[^>]*>/g, '').length : 0);
-                const active = textLen >= config.minTotalText;
-                if (config.debugMode) console.log('ADHD Highlighter (Defuddle):', { textLen, threshold: config.minTotalText, active });
-                return active;
+                textLen = result && result.content ? result.content.replace(/<[^>]*>/g, '').length : 0;
             } catch (e) {
                 if (config.debugMode) console.warn('ADHD Highlighter: Defuddle failed, falling back', e);
             }
         }
-
-        // Fallback: count text in actual paragraphs — short UI snippets don't count
-        let total = 0;
-        let longParaCount = 0;
-        const paragraphs = document.querySelectorAll('p, article, main, [role="main"]');
-        for (const el of paragraphs) {
-            const len = (el.textContent || '').trim().length;
-            total += len;
-            if (el.tagName === 'P' && len >= 80) longParaCount++;
+        if (!textLen) {
+            // Fallback: count text in content containers
+            for (const el of document.querySelectorAll('p, article, main, [role="main"]')) {
+                textLen += (el.textContent || '').trim().length;
+            }
         }
 
-        // Need both: enough total text AND at least 3 real paragraphs
-        const active = total >= config.minTotalText && longParaCount >= 3;
-
+        const active = textLen >= config.minTotalText;
         if (config.debugMode) {
-            console.log('ADHD Highlighter:', active ? 'Active' : 'Inactive', { total, longParaCount, threshold: config.minTotalText });
+            console.log('ADHD Highlighter:', active ? 'Active' : 'Inactive', { textLen, longParaCount, threshold: config.minTotalText });
         }
         return active;
     }
@@ -945,6 +961,12 @@
         }
 
         checkContentType() {
+            // Once a page qualifies, don't keep re-parsing on every DOM change
+            // (comments loading, ads rotating) — only re-evaluate after SPA navigation.
+            const url = location.href;
+            if (this.state.articleLike && url === this.state.lastCheckedUrl) return;
+            this.state.lastCheckedUrl = url;
+
             const isArticle = isArticleLike(this.state);
             if (isArticle !== this.state.articleLike) {
                 this.state.articleLike = isArticle;

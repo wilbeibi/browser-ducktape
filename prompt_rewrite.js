@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Prompt Enhancer
 // @namespace    http://tampermonkey.net/
-// @version      4.1.0
+// @version      4.1.2
 // @description  One-click prompt enhancement for AI chat interfaces
 // @author       You
 // @match        https://claude.ai/*
@@ -80,8 +80,6 @@ Return ONLY the enhanced prompt, nothing else.`;
     const STYLE = `
 .pe-btn {
     position: absolute;
-    top: 8px;
-    right: 8px;
     width: 28px;
     height: 28px;
     border-radius: 6px;
@@ -592,20 +590,140 @@ Return ONLY the enhanced prompt, nothing else.`;
         return textarea.parentElement;
     }
 
-    function positionButtonFixed(btn, textarea) {
-        btn.style.position = 'fixed';
-        const update = () => {
-            const rect = textarea.getBoundingClientRect();
-            btn.style.top = (rect.top + 4) + 'px';
-            btn.style.left = (rect.right - 36) + 'px';
+    function isVisible(el) {
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    }
+
+    function rectsOverlap(a, b, gap = 4) {
+        return !(
+            a.right <= b.left - gap ||
+            a.left >= b.right + gap ||
+            a.bottom <= b.top - gap ||
+            a.top >= b.bottom + gap
+        );
+    }
+
+    function clamp(value, min, max) {
+        if (max < min) return min;
+        return Math.max(min, Math.min(value, max));
+    }
+
+    function getButtonObstacles(btn, textarea) {
+        const inputRect = textarea.getBoundingClientRect();
+        const root = textarea.getRootNode();
+        const scope = root instanceof ShadowRoot ? root : document.body;
+        const selector = [
+            'button',
+            '[role="button"]',
+            '[aria-label*="send" i]',
+            '[aria-label*="submit" i]',
+            '[data-testid*="send" i]',
+            '[data-testid*="submit" i]'
+        ].join(',');
+        return Array.from(scope.querySelectorAll(selector))
+            .filter(el => el !== btn && isVisible(el))
+            .map(el => el.getBoundingClientRect())
+            .filter(rect => rectsOverlap(rect, {
+                left: inputRect.left - 48,
+                right: inputRect.right + 48,
+                top: inputRect.top - 48,
+                bottom: inputRect.bottom + 48
+            }, 0));
+    }
+
+    function chooseButtonPosition(btn, textarea) {
+        const inputRect = textarea.getBoundingClientRect();
+        const btnWidth = btn.offsetWidth || 28;
+        const btnHeight = btn.offsetHeight || 28;
+        const inset = 8;
+        const obstacles = getButtonObstacles(btn, textarea);
+        const bounds = {
+            left: inputRect.left + inset,
+            right: inputRect.right - inset,
+            top: inputRect.top + inset,
+            bottom: inputRect.bottom - inset
         };
+        const positions = [
+            { left: inputRect.right - btnWidth - inset, top: inputRect.top + inset },
+            { left: inputRect.left + inset, top: inputRect.top + inset },
+            { left: inputRect.left + inset, top: inputRect.bottom - btnHeight - inset },
+            { left: inputRect.right - btnWidth - inset, top: inputRect.top - btnHeight - 6 },
+            { left: inputRect.left + inset, top: inputRect.top - btnHeight - 6 }
+        ];
+
+        for (const obstacle of obstacles) {
+            positions.unshift({
+                left: obstacle.left - btnWidth - 6,
+                top: clamp(obstacle.top + (obstacle.height - btnHeight) / 2, inputRect.top + inset, inputRect.bottom - btnHeight - inset)
+            });
+        }
+
+        for (const pos of positions) {
+            const candidate = {
+                left: clamp(pos.left, bounds.left, bounds.right - btnWidth),
+                top: clamp(pos.top, inputRect.top - btnHeight - 6, bounds.bottom - btnHeight),
+                right: 0,
+                bottom: 0
+            };
+            candidate.right = candidate.left + btnWidth;
+            candidate.bottom = candidate.top + btnHeight;
+            if (!obstacles.some(obstacle => rectsOverlap(candidate, obstacle))) return candidate;
+        }
+
+        return {
+            left: inputRect.left + inset,
+            top: inputRect.top - btnHeight - 6,
+            right: inputRect.left + inset + btnWidth,
+            bottom: inputRect.top - 6
+        };
+    }
+
+    function positionButton(btn, textarea, container) {
+        const fixed = !container;
+        btn.style.position = fixed ? 'fixed' : 'absolute';
+        const scope = container || document.body;
+        if (!btn.parentNode) scope.appendChild(btn);
+
+        const reposition = () => {
+            if (!textarea.isConnected || !btn.isConnected) return;
+            const pos = chooseButtonPosition(btn, textarea);
+            if (fixed) {
+                btn.style.left = pos.left + 'px';
+                btn.style.top = pos.top + 'px';
+                return;
+            }
+            const containerRect = container.getBoundingClientRect();
+            btn.style.left = (pos.left - containerRect.left + container.scrollLeft) + 'px';
+            btn.style.top = (pos.top - containerRect.top + container.scrollTop) + 'px';
+        };
+
+        // chooseButtonPosition scans the page for obstacles — coalesce the
+        // scroll/resize/observer storm into one update per frame
+        let rafId = null;
+        const update = () => {
+            if (rafId) return;
+            rafId = requestAnimationFrame(() => { rafId = null; reposition(); });
+        };
+
         update();
         window.addEventListener('scroll', update, true);
         window.addEventListener('resize', update);
-        document.body.appendChild(btn);
+        const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(update) : null;
+        if (resizeObserver) {
+            resizeObserver.observe(textarea);
+            resizeObserver.observe(btn);
+            if (container) resizeObserver.observe(container);
+        }
+        const interval = setInterval(update, 750);
+
         return () => {
             window.removeEventListener('scroll', update, true);
             window.removeEventListener('resize', update);
+            if (resizeObserver) resizeObserver.disconnect();
+            clearInterval(interval);
+            if (rafId) cancelAnimationFrame(rafId);
             if (btn.parentNode) btn.remove();
         };
     }
@@ -623,13 +741,12 @@ Return ONLY the enhanced prompt, nothing else.`;
         let cleanup;
 
         if (needsFixed) {
-            cleanup = positionButtonFixed(btn, textarea);
+            cleanup = positionButton(btn, textarea, null);
         } else {
             if (getComputedStyle(container).position === 'static') {
                 container.style.position = 'relative';
             }
-            container.appendChild(btn);
-            cleanup = () => { if (btn.parentNode) btn.remove(); };
+            cleanup = positionButton(btn, textarea, container);
         }
 
         btn.onclick = (e) => {
@@ -655,7 +772,7 @@ Return ONLY the enhanced prompt, nothing else.`;
     // Keyboard shortcut: Ctrl+Shift+E
     // ==========================================
     document.addEventListener('keydown', (e) => {
-        if (e.ctrlKey && e.shiftKey && e.key === 'E') {
+        if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'e') {
             e.preventDefault();
             const textarea = getTextarea();
             if (textarea && textarea._peBtn) {
@@ -669,10 +786,13 @@ Return ONLY the enhanced prompt, nothing else.`;
     // ==========================================
     function checkForTextarea() {
         if (document.hidden) return;
-        if (activeTextarea && !document.contains(activeTextarea)) {
+        // isConnected (not document.contains) so shadow-DOM textareas aren't
+        // treated as stale and re-injected on every check
+        if (activeTextarea && !activeTextarea.isConnected) {
             cleanupTextarea(activeTextarea);
             activeTextarea = null;
         }
+        undoStack = undoStack.filter(u => u.el.isConnected);
         const textarea = getTextarea();
         if (!textarea) return;
         if (activeTextarea && activeTextarea !== textarea) {

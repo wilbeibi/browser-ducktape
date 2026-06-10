@@ -10,7 +10,7 @@ Userscripts for patching up daily browsing annoyances.
 ## Scripts
 
 ### 🧠 Focus & Accessibility
-- **`adhd_reader.js`** — Highlights the line you're reading. Keeps your eyes from wandering.
+- **`adhd_reader.js`** — Highlights the line you're reading. Keeps your eyes from wandering. Only activates on text-dense article pages — feeds, dashboards, and app UIs are left alone.
   ![Reading Ruler Demo](screenshots/highlight.png)
 
 - **`worth_watching.js`** — During work hours, blurs YouTube/Bilibili and asks a random question like *"Was this video part of your plan today?"* before you can watch. 10-second cooldown to prevent autopilot clicks. Skip the timer for study/learning videos.
@@ -26,5 +26,3 @@ Userscripts for patching up daily browsing annoyances.
 ### 🛠️ Utilities
 - **`deepwiki_on_github.js`** — Adds a button on GitHub repos to jump straight to DeepWiki for AI-generated docs and code explanations.
   ![DeepWiki on GitHub Demo](screenshots/deepwiki.png)
-
-- **`youtube_transcript_downloader.js`** — Adds a download button next to any YouTube video to grab its transcript as plain text. Great for feeding into LLMs or note-taking.

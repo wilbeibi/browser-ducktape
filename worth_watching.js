@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Video Watch Confirmation
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  Asks whether a video is worth watching during work hours on YouTube and Bilibili, with background blur
 // @author       You
 // @match        https://www.youtube.com/*
@@ -46,25 +46,41 @@
         return /youtube\.com\/watch/.test(href) || /bilibili\.com\/video\//.test(href);
     };
 
+    // Key by video ID so timestamp/playlist param changes don't re-trigger
+    const videoKey = () => {
+        const href = window.location.href;
+        const yt = href.match(/[?&]v=([\w-]+)/);
+        if (yt) return 'yt:' + yt[1];
+        const bili = href.match(/bilibili\.com\/video\/((?:BV|av)\w+)/i);
+        if (bili) return 'bili:' + bili[1];
+        return href;
+    };
+
     const isConfirmed = () =>
-        sessionStorage.getItem('videoConfirmed:' + window.location.href) === '1';
+        sessionStorage.getItem('videoConfirmed:' + videoKey()) === '1';
 
     const markConfirmed = () =>
-        sessionStorage.setItem('videoConfirmed:' + window.location.href, '1');
+        sessionStorage.setItem('videoConfirmed:' + videoKey(), '1');
 
     let activeOverlay = null;
     let playBlocker = null;
+    let countdownTimer = null;
+    let visibilityHandler = null;
 
     function cleanup() {
         if (activeOverlay) { activeOverlay.remove(); activeOverlay = null; }
         const blur = document.getElementById('video-confirm-blur');
         if (blur) blur.remove();
         if (playBlocker) { document.removeEventListener('play', playBlocker, true); playBlocker = null; }
+        if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+        if (visibilityHandler) { document.removeEventListener('visibilitychange', visibilityHandler); visibilityHandler = null; }
     }
 
     function showConfirmation() {
-        if (!isWithinWorkingHours() || !isVideoPage() || isConfirmed()) return;
+        // cleanup() either way — an overlay from a previous video must not
+        // survive SPA navigation to a page that doesn't need one
         cleanup();
+        if (!isWithinWorkingHours() || !isVideoPage() || isConfirmed()) return;
 
         // Block video playback via capture-phase listener
         playBlocker = (e) => { e.target.pause(); e.target.currentTime = 0; };
@@ -155,7 +171,6 @@
         `;
         countdownTrack.appendChild(countdownFill);
 
-        let countdownTimer = null;
         const tick = () => {
             if (document.hidden) return;
             remaining -= 1;
@@ -165,7 +180,7 @@
                 return;
             }
             clearInterval(countdownTimer);
-            document.removeEventListener('visibilitychange', onVisibilityChange);
+            countdownTimer = null;
             yesButton.disabled = false;
             yesButton.style.opacity = '1';
             yesButton.style.cursor = 'pointer';
@@ -173,19 +188,18 @@
             yesButton.style.background = '#4CAF50';
             countdownTrack.style.display = 'none';
         };
-        const onVisibilityChange = () => {
-            if (!document.hidden) {
+        // Switching away resets the timer — no waiting it out in another tab
+        visibilityHandler = () => {
+            if (!document.hidden && countdownTimer) {
                 remaining = COUNTDOWN_SECONDS;
                 yesButton.textContent = `Yes (${remaining})`;
                 countdownFill.style.width = '100%';
             }
         };
-        document.addEventListener('visibilitychange', onVisibilityChange);
+        document.addEventListener('visibilitychange', visibilityHandler);
         countdownTimer = setInterval(tick, 1000);
 
         const dismiss = (confirmed) => {
-            clearInterval(countdownTimer);
-            document.removeEventListener('visibilitychange', onVisibilityChange);
             if (confirmed) {
                 markConfirmed();
                 cleanup();
