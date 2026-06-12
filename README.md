@@ -16,7 +16,8 @@ Userscripts for patching up daily browsing annoyances.
 - **`worth_watching.js`** — During work hours, blurs YouTube/Bilibili and asks a random question like *"Was this video part of your plan today?"* before you can watch. 10-second cooldown to prevent autopilot clicks. Skip the timer for study/learning videos.
 
 ### 🤖 AI Tools
-- **`inline_translate.js`** — Bilingual inline translation. Click the floating 译 button (or hit `Ctrl+T`) and every paragraph gets its Chinese translation right below the original. Also does text-selection translation — select any text for an instant popup. Streaming, lazy loading, and local caching keep it fast. Works with any OpenAI-compatible API; right-click the button for settings.
+- **`inline_translate.js`** — Bilingual inline translation. Click the floating 译 button (or hit `Ctrl+T`) and every paragraph gets its Chinese translation right below the original. Also does text-selection translation (划词翻译) — select any text for an instant dictionary-style popup. Streaming, lazy loading, and local caching keep it fast. Works with any OpenAI-compatible API; right-click the button for settings.
+  ![Inline Translate Demo](screenshots/translate-demo.svg)
 
 - **`prompt_rewrite.js`** — One-click prompt enhancer for Claude, ChatGPT, and Gemini. Hit ✨, get a sharper prompt. Undo if you don't like it. Works with any OpenAI-compatible API.
 

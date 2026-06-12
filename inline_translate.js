@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
 // @namespace    http://tampermonkey.net/
-// @version      1.2.1
+// @version      1.3.0
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally.
 // @author       You
 // @match        *://*/*
@@ -317,18 +317,49 @@ html.llmtr-hide .llmtr { display: none; }
     position: fixed;
     z-index: 2147483647;
     min-width: 80px;
-    max-width: 340px;
+    max-width: 360px;
     max-height: 45vh;
     overflow-y: auto;
     background: #fff;
     color: #222;
     border: 1px solid rgba(0,0,0,0.12);
-    border-radius: 8px;
-    box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+    border-radius: 10px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.2);
     padding: 10px 12px;
-    font: 14px/1.5 system-ui, sans-serif;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
 }
 .llmtr-sel-pop-body { white-space: pre-wrap; word-break: break-word; }
+.llmtr-sel-title {
+    margin-bottom: 6px;
+    font-size: 16px;
+    font-weight: 650;
+    line-height: 1.3;
+    color: #111;
+}
+.llmtr-sel-detail { color: #333; }
+.llmtr-sel-pos {
+    display: inline;
+    margin-left: 7px;
+    font-size: 12px;
+    font-weight: 400;
+    font-style: italic;
+    color: #8a8a8e;
+}
+.llmtr-sel-row { margin-top: 8px; }
+.llmtr-sel-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: #9a9aa0;
+    margin-bottom: 1px;
+}
+.llmtr-sel-content { color: #333; }
+.llmtr-sel-ex-src {
+    font-family: Georgia, "Times New Roman", serif;
+    font-style: italic;
+    color: #444;
+}
+.llmtr-sel-ex-tr { color: #777; font-size: 13px; margin-top: 1px; }
 .llmtr-sel-pop-body.llmtr-sel-loading {
     opacity: 0.5;
     animation: llmtr-pulse 1.2s ease-in-out infinite;
@@ -336,6 +367,13 @@ html.llmtr-hide .llmtr { display: none; }
 .llmtr-sel-pop-body.llmtr-sel-error { color: #d32f2f; }
 @media (prefers-color-scheme: dark) {
     .llmtr-sel-pop { background: #1e1e1e; color: #ddd; border-color: #444; }
+    .llmtr-sel-title { color: #fff; }
+    .llmtr-sel-detail { color: #d0d0d0; }
+    .llmtr-sel-pos { color: #98989d; }
+    .llmtr-sel-label { color: #7f7f86; }
+    .llmtr-sel-content { color: #d0d0d0; }
+    .llmtr-sel-ex-src { color: #c8c8cc; }
+    .llmtr-sel-ex-tr { color: #97979d; }
 }`;
 
     // ==========================================
@@ -1033,9 +1071,20 @@ html.llmtr-hide .llmtr { display: none; }
     }
 
     function selectionPrompt(lang) {
-        return `You are a translation engine. Translate the user's text into ${lang}. ` +
-            `Output only the translation — no quotes, labels, notes, or explanations. ` +
-            `Keep inline code, URLs, file paths, and proper nouns as-is.`;
+        return `You are a concise bilingual learner's dictionary. Explain the user's selected text in ${lang}.
+
+Output only the answer, using this compact plain-text format:
+翻译: ...
+词性: ... (only for a single word, omit if not applicable)
+释义: ...
+例句: ... -> ...
+用法: ... (omit if there is no useful nuance)
+
+Rules:
+- Be concise and practical.
+- For phrases and idioms, explain the whole expression instead of word-by-word translation.
+- Keep inline code, URLs, file paths, and proper nouns as-is.
+- Do not add greetings, quotes, labels other than the format above, or unrelated notes.`;
     }
 
     function getSelectionInfo() {
@@ -1089,10 +1138,58 @@ html.llmtr-hide .llmtr { display: none; }
         requestAnimationFrame(() => { if (selPop === p) placeSelPop(rect); });
     }
 
+    function appendText(parent, className, text) {
+        const el = document.createElement('div');
+        el.className = className;
+        el.textContent = text;
+        parent.appendChild(el);
+        return el;
+    }
+
+    // Typeset the dictionary-style answer (macOS 词典-look): bold headword,
+    // italic gray part-of-speech beside it, captioned sections, serif italics
+    // for example sentences. Falls back to plain text for free-form replies.
+    function renderSelectionPopup(body, text) {
+        const lines = String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        if (lines.length < 2 && !/^翻译\s*[:：]/.test(lines[0] || '')) {
+            body.textContent = text;
+            return;
+        }
+        body.replaceChildren();
+        const title = appendText(body, 'llmtr-sel-title', lines[0].replace(/^翻译\s*[:：]\s*/, ''));
+        let lastContent = null;
+        for (const line of lines.slice(1)) {
+            const m = line.match(/^(词性|释义|例句|用法)\s*[:：]\s*(.*)$/);
+            if (!m) {
+                // continuation of the previous field, or free-form extra text
+                if (lastContent) lastContent.append('\n' + line);
+                else appendText(body, 'llmtr-sel-detail', line);
+                continue;
+            }
+            const label = m[1], val = m[2];
+            if (label === '词性') {
+                appendText(title, 'llmtr-sel-pos', val);
+                continue;
+            }
+            const row = appendText(body, 'llmtr-sel-row', '');
+            appendText(row, 'llmtr-sel-label', label);
+            const content = appendText(row, 'llmtr-sel-content', '');
+            if (label === '例句') {
+                const arrow = val.split(/\s*(?:->|→)\s*/);
+                appendText(content, 'llmtr-sel-ex-src', arrow[0]);
+                if (arrow.length > 1) appendText(content, 'llmtr-sel-ex-tr', arrow.slice(1).join(' '));
+            } else {
+                content.textContent = val;
+            }
+            lastContent = content;
+        }
+    }
+
     function setPopupText(text, loading, error) {
         if (!selPop) return;
         const body = selPop._body;
-        body.textContent = text;
+        if (error) body.textContent = text;
+        else renderSelectionPopup(body, text);
         body.classList.toggle('llmtr-sel-loading', !!loading);
         body.classList.toggle('llmtr-sel-error', !!error);
         repositionSelUI(); // streamed text grows the bubble — keep it in view
@@ -1106,7 +1203,8 @@ html.llmtr-hide .llmtr { display: none; }
         selAnchor = range; // removeSelBtn cleared it while no popup existed
 
         const src = text.slice(0, MAX_SEGMENT_CHARS);
-        const cached = cacheGet(src, cfg);
+        const cacheSrc = 'selection-dictionary-v1\x00' + src;
+        const cached = cacheGet(cacheSrc, cfg);
         if (cached) { setPopupText(cached, false); return; }
 
         streamChat({
@@ -1120,7 +1218,7 @@ html.llmtr-hide .llmtr { display: none; }
         }).then((full) => {
             const out = (full || '').trim();
             setPopupText(out || '(no translation)', false);
-            if (out) cachePut(src, out, cfg);
+            if (out) cachePut(cacheSrc, out, cfg);
         }).catch((err) => {
             setPopupText('⚠ ' + err.message, false, true);
         });
