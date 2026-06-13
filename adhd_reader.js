@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ADHD-Friendly Line Highlighter (Enhanced)
 // @namespace    http://tampermonkey.net/
-// @version      5.7
+// @version      6.0
 // @description  Highlights the text line under your cursor on text-dense article pages.
 // @author       Enhanced Version
 // @match        *://*/*
@@ -38,6 +38,8 @@
         showToggleButton: true,
         keyboardShortcut: 'Alt+H',
         persistentHighlight: false,
+        keyboardNav: true,        // J/K step the highlight line by line
+        buttonPosition: 'bottom-right',
         debugMode: false,
         excludedSites: [],        // User-managed site exclusions (hostnames or patterns)
         throttleMs: 16,           // ~60fps max
@@ -88,6 +90,7 @@
             this.highlightDiv = null;
             this.toggleButton = null;
             this.settingsPanel = null;
+            this.settingsBackdrop = null;
             this.isActive = false;
             this.articleLike = false;
             this.lastCheckedUrl = location.href;
@@ -189,6 +192,10 @@
                 background: rgba(46, 204, 113, 0.9);
                 opacity: 0.8;
             }
+            .adhd-corner-br { bottom: 20px; right: 20px; top: auto; left: auto; }
+            .adhd-corner-bl { bottom: 20px; left: 20px; top: auto; right: auto; }
+            .adhd-corner-tr { top: 20px; right: 20px; bottom: auto; left: auto; }
+            .adhd-corner-tl { top: 20px; left: 20px; bottom: auto; right: auto; }
             .adhd-settings-panel {
                 position: fixed;
                 top: 50%;
@@ -201,6 +208,8 @@
                 z-index: 1000000;
                 max-width: 400px;
                 width: 90%;
+                max-height: 85vh;
+                overflow-y: auto;
                 display: none;
                 font-family: Arial, sans-serif;
                 color: #333;
@@ -221,13 +230,28 @@
             .adhd-settings-save { background-color: #4CAF50; }
             .adhd-settings-cancel { background-color: #f44336; }
             .adhd-settings-reset { background-color: #ff9800; }
-            .adhd-settings-panel .color-preview {
-                display: inline-block;
-                width: 20px;
-                height: 20px;
+            .adhd-preview-line {
+                margin: 8px 0 2px;
+                padding: 2px 6px;
+                border-radius: 2px;
+                font-size: 14px;
+                line-height: 1.5;
+            }
+            .adhd-exclude-row { display: flex; gap: 4px; margin-top: 6px; }
+            .adhd-exclude-row input[type="text"] {
+                flex: 1;
+                min-width: 0;
+                padding: 4px 6px;
                 border: 1px solid #ccc;
-                vertical-align: middle;
-                margin-left: 10px;
+                border-radius: 4px;
+                background: #fff;
+                color: #333;
+            }
+            .adhd-exclude-row button {
+                margin: 0;
+                padding: 4px 8px;
+                font-size: 12px;
+                background-color: #607d8b;
             }
             @media (prefers-color-scheme: dark) {
                 .adhd-settings-panel {
@@ -240,6 +264,13 @@
                 .adhd-settings-panel select { background: #2d2d2d; color: #e0e0e0; border-color: #555; }
                 .adhd-settings-panel small { color: #888 !important; }
                 .adhd-excluded-sites-list { border-color: #555; }
+                .adhd-exclude-row input[type="text"] { background: #2d2d2d; color: #e0e0e0; border-color: #555; }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .adhd-line-highlight,
+                .adhd-toggle-button,
+                .adhd-flash-message,
+                .adhd-preview-line { transition: none !important; }
             }
             .adhd-settings-backdrop {
                 position: fixed;
@@ -283,7 +314,8 @@
                 z-index: 1000001;
                 opacity: 0;
                 transition: opacity 0.2s ease;
-                white-space: nowrap;
+                max-width: min(320px, 80vw);
+                line-height: 1.4;
             }
             .adhd-flash-message.show { opacity: 1; }
         `);
@@ -319,18 +351,29 @@
             button.style.display = this.state.config.showToggleButton ? 'flex' : 'none';
 
             button.addEventListener('click', () => {
-                if (!window.adhdHighlighter) return;
-                if (!window.adhdHighlighter.state.articleLike) {
-                    // On non-article pages, click opens settings instead
-                    this.showSettings();
-                } else {
-                    window.adhdHighlighter.toggle();
+                if (this._suppressClick) {
+                    this._suppressClick = false;
+                    return;
                 }
+                window.adhdHighlighter?.toggle();
             });
             button.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
                 this.showSettings();
             });
+
+            // Long-press opens settings on touch devices, where right-click doesn't exist
+            let pressTimer = null;
+            button.addEventListener('touchstart', () => {
+                pressTimer = setTimeout(() => {
+                    pressTimer = null;
+                    this._suppressClick = true;
+                    this.showSettings();
+                }, 550);
+            }, { passive: true });
+            const cancelPress = () => { clearTimeout(pressTimer); pressTimer = null; };
+            button.addEventListener('touchend', cancelPress, { passive: true });
+            button.addEventListener('touchmove', cancelPress, { passive: true });
 
             document.body.appendChild(button);
             this.state.toggleButton = button;
@@ -348,14 +391,23 @@
             // Update icon and tooltip based on state
             if (!this.state.articleLike) {
                 button.innerHTML = '📄';
-                button.title = 'ADHD Highlighter (Not available on this page — right-click for settings)';
+                button.title = 'ADHD Highlighter (Not available on this page — right-click or long-press for settings)';
             } else if (this.state.config.enabled) {
                 button.innerHTML = '🔆';
-                button.title = 'ADHD Highlighter Active (Click to disable, right-click for settings)';
+                button.title = 'ADHD Highlighter Active (Click to disable, right-click or long-press for settings)';
             } else {
                 button.innerHTML = '📖';
-                button.title = 'ADHD Highlighter Inactive (Click to enable, right-click for settings)';
+                button.title = 'ADHD Highlighter Inactive (Click to enable, right-click or long-press for settings)';
             }
+
+            const corners = {
+                'bottom-right': 'adhd-corner-br',
+                'bottom-left': 'adhd-corner-bl',
+                'top-right': 'adhd-corner-tr',
+                'top-left': 'adhd-corner-tl'
+            };
+            button.classList.remove(...Object.values(corners));
+            button.classList.add(corners[this.state.config.buttonPosition] || 'adhd-corner-br');
 
             button.style.display = this.state.config.showToggleButton ? 'flex' : 'none';
         }
@@ -379,50 +431,80 @@
         }
 
         getSettingsHTML() {
+            const cfg = this.state.config;
+            const activationPresets = [
+                [3000, 'Long articles only (default)'],
+                [800, 'Most pages with text'],
+                [0, 'Every page']
+            ];
+            const hasCustomMin = !activationPresets.some(([v]) => v === cfg.minTotalText);
+            const positions = {
+                'bottom-right': 'Bottom right',
+                'bottom-left': 'Bottom left',
+                'top-right': 'Top right',
+                'top-left': 'Top left'
+            };
             return `
                 <h3>ADHD Line Highlighter Settings</h3>
+                <div class="adhd-preview-line" id="adhd-preview-line">The quick brown fox jumps over the lazy dog.</div>
                 <label>
                     Color Preset:
                     <select id="adhd-color-preset">
                         ${Object.entries(COLOR_PRESETS).map(([name, color]) =>
-                `<option value="${color}" ${this.state.config.highlightColor === color ? 'selected' : ''}>${name}</option>`
+                `<option value="${color}" ${cfg.highlightColor === color ? 'selected' : ''}>${name}</option>`
             ).join('')}
                     </select>
-                    <span class="color-preview" id="adhd-color-preview"></span>
                 </label>
                 <label>
                     Transparency: <span id="adhd-opacity-value">${this.getOpacityPercent()}%</span>
                     <input type="range" id="adhd-opacity" min="10" max="90" value="${this.getOpacityPercent()}">
                 </label>
                 <label>
-                    Line Padding: <span id="adhd-padding-value">${this.state.config.verticalPadding}px</span>
-                    <input type="range" id="adhd-padding" min="0" max="10" value="${this.state.config.verticalPadding}">
+                    Line Padding: <span id="adhd-padding-value">${cfg.verticalPadding}px</span>
+                    <input type="range" id="adhd-padding" min="0" max="10" value="${cfg.verticalPadding}">
                 </label>
                 <label>
-                    <input type="checkbox" id="adhd-smooth-transition" ${this.state.config.smoothTransition ? 'checked' : ''}>
+                    <input type="checkbox" id="adhd-smooth-transition" ${cfg.smoothTransition ? 'checked' : ''}>
                     Smooth transitions
                 </label>
                 <label>
-                    <input type="checkbox" id="adhd-persistent" ${this.state.config.persistentHighlight ? 'checked' : ''}>
-                    Keep highlight when mouse stops
+                    <input type="checkbox" id="adhd-persistent" ${cfg.persistentHighlight ? 'checked' : ''}>
+                    Keep highlight when mouse leaves the page
                 </label>
                 <label>
-                    <input type="checkbox" id="adhd-show-button" ${this.state.config.showToggleButton ? 'checked' : ''}>
+                    <input type="checkbox" id="adhd-keyboard-nav" ${cfg.keyboardNav ? 'checked' : ''}>
+                    Step lines with J / K keys
+                </label>
+                <label>
+                    <input type="checkbox" id="adhd-show-button" ${cfg.showToggleButton ? 'checked' : ''}>
                     Show toggle button
                 </label>
                 <label>
-                    <input type="checkbox" id="adhd-debug-mode" ${this.state.config.debugMode ? 'checked' : ''}>
-                    Debug mode (console logs)
+                    Button position:
+                    <select id="adhd-button-pos">
+                        ${Object.entries(positions).map(([value, name]) =>
+                `<option value="${value}" ${cfg.buttonPosition === value ? 'selected' : ''}>${name}</option>`
+            ).join('')}
+                    </select>
                 </label>
                 <label>
-                    Minimum visible text to activate (chars):
-                    <input type="number" id="adhd-min-total" min="0" max="5000" value="${this.state.config.minTotalText}">
-                    <small style="color: #666;">Set to 0 to activate on every page</small>
+                    Activate on:
+                    <select id="adhd-min-total">
+                        ${activationPresets.map(([value, name]) =>
+                `<option value="${value}" ${cfg.minTotalText === value ? 'selected' : ''}>${name}</option>`
+            ).join('')}
+                        ${hasCustomMin ? `<option value="${cfg.minTotalText}" selected>Custom (${cfg.minTotalText} chars)</option>` : ''}
+                    </select>
                 </label>
                 <label>
                     Excluded sites:
                     <div class="adhd-excluded-sites-list" id="adhd-excluded-sites">
                         ${this.getExcludedSitesHTML()}
+                    </div>
+                    <div class="adhd-exclude-row">
+                        <input type="text" id="adhd-exclude-input" placeholder="example.com">
+                        <button type="button" class="adhd-exclude-add">Add site</button>
+                        <button type="button" class="adhd-exclude-current">Exclude this site</button>
                     </div>
                 </label>
                 <div style="margin-top:20px;text-align:center;">
@@ -451,38 +533,64 @@
 
         bindSettingsEvents() {
             const panel = this.state.settingsPanel;
+            const cfg = this.state.config;
             const colorPreset = panel.querySelector('#adhd-color-preset');
-            const colorPreview = panel.querySelector('#adhd-color-preview');
             const opacitySlider = panel.querySelector('#adhd-opacity');
             const opacityValue = panel.querySelector('#adhd-opacity-value');
             const paddingSlider = panel.querySelector('#adhd-padding');
             const paddingValue = panel.querySelector('#adhd-padding-value');
-            const updateColorPreview = () => {
-                const baseColor = colorPreset.value;
-                const opacity = opacitySlider.value / 100;
-                const match = baseColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-                if (match) {
-                    colorPreview.style.backgroundColor = `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${opacity})`;
-                }
+            const smoothBox = panel.querySelector('#adhd-smooth-transition');
+            const previewLine = panel.querySelector('#adhd-preview-line');
+
+            const currentColor = () => {
+                const m = colorPreset.value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+                return m ? `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${opacitySlider.value / 100})` : colorPreset.value;
             };
 
-            colorPreset.addEventListener('change', updateColorPreview);
+            // Live preview: apply to both the sample line and the real highlight.
+            // Mutates config in memory only — hideSettings restores the snapshot on cancel.
+            const applyPreview = () => {
+                cfg.highlightColor = currentColor();
+                cfg.verticalPadding = parseInt(paddingSlider.value, 10);
+                cfg.smoothTransition = smoothBox.checked;
+                this.updateHighlightStyle();
+                previewLine.style.backgroundColor = cfg.highlightColor;
+                previewLine.style.paddingTop = previewLine.style.paddingBottom = cfg.verticalPadding + 'px';
+                previewLine.style.transition = cfg.smoothTransition ? 'all 150ms ease-in-out' : 'none';
+            };
+
+            colorPreset.addEventListener('change', applyPreview);
             opacitySlider.addEventListener('input', () => {
                 opacityValue.textContent = `${opacitySlider.value}%`;
-                updateColorPreview();
+                applyPreview();
             });
             paddingSlider.addEventListener('input', () => {
                 paddingValue.textContent = `${paddingSlider.value}px`;
+                applyPreview();
             });
-            updateColorPreview();
+            smoothBox.addEventListener('change', applyPreview);
+            applyPreview();
 
             panel.querySelector('.adhd-settings-save').addEventListener('click', () => this.saveSettings());
             panel.querySelector('.adhd-settings-cancel').addEventListener('click', () => this.hideSettings());
             panel.querySelector('.adhd-settings-reset').addEventListener('click', () => {
-                if (confirm('Reset all settings to defaults?')) {
-                    this.state.resetConfig();
-                    location.reload();
-                }
+                if (!confirm('Reset all settings to defaults?')) return;
+                this.state.resetConfig();
+                // resetConfig replaces the config object — re-read it, don't use cfg
+                const fresh = this.state.config;
+                // Re-snapshot so a later Cancel doesn't restore pre-reset values
+                this._snapshot = {
+                    highlightColor: fresh.highlightColor,
+                    verticalPadding: fresh.verticalPadding,
+                    smoothTransition: fresh.smoothTransition
+                };
+                panel.innerHTML = this.getSettingsHTML();
+                this.bindSettingsEvents();
+                this.updateHighlightStyle();
+                this.updateToggleButton();
+                const hl = window.adhdHighlighter;
+                if (hl && this.state.articleLike && this.state.config.enabled) hl.activate();
+                this.showFlashMessage('Settings reset to defaults');
             });
 
             // Remove excluded site buttons (delegated)
@@ -495,6 +603,38 @@
                 this.state.saveConfig({ excludedSites: list });
                 panel.querySelector('#adhd-excluded-sites').innerHTML = this.getExcludedSitesHTML();
             });
+
+            // Add exclusions
+            const excludeInput = panel.querySelector('#adhd-exclude-input');
+            const addExclusion = (raw) => {
+                let site = String(raw || '').trim().toLowerCase();
+                site = site.replace(/^[a-z]+:\/\//, '').split('/')[0]; // accept pasted URLs
+                if (!site) return;
+                const list = Array.isArray(this.state.config.excludedSites) ? this.state.config.excludedSites : [];
+                if (list.includes(site)) {
+                    this.showFlashMessage('Already excluded');
+                    return;
+                }
+                this.state.saveConfig({ excludedSites: [...list, site] });
+                panel.querySelector('#adhd-excluded-sites').innerHTML = this.getExcludedSitesHTML();
+                this.showFlashMessage(matchHostname(location.hostname, site)
+                    ? `Excluded ${site} — takes effect on reload`
+                    : `Excluded ${site}`);
+            };
+            panel.querySelector('.adhd-exclude-add').addEventListener('click', () => {
+                addExclusion(excludeInput.value);
+                excludeInput.value = '';
+            });
+            excludeInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addExclusion(excludeInput.value);
+                    excludeInput.value = '';
+                }
+            });
+            panel.querySelector('.adhd-exclude-current').addEventListener('click', () => {
+                addExclusion(location.hostname);
+            });
         }
 
         saveSettings() {
@@ -506,44 +646,99 @@
             const opacity = opacitySlider.value / 100;
             const match = baseColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
 
-            const updates = {
-                highlightColor: match ? `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${opacity})` : baseColor,
-                verticalPadding: parseInt(panel.querySelector('#adhd-padding').value),
-                smoothTransition: panel.querySelector('#adhd-smooth-transition').checked,
-                persistentHighlight: panel.querySelector('#adhd-persistent').checked,
-                showToggleButton: panel.querySelector('#adhd-show-button').checked,
-                debugMode: panel.querySelector('#adhd-debug-mode').checked,
-                minTotalText: parseInt(panel.querySelector('#adhd-min-total').value)
+            // Empty/invalid number inputs parse to NaN — fall back to current config
+            const intOr = (value, fallback) => {
+                const n = parseInt(value, 10);
+                return Number.isFinite(n) ? n : fallback;
             };
 
+            const updates = {
+                highlightColor: match ? `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${opacity})` : baseColor,
+                verticalPadding: intOr(panel.querySelector('#adhd-padding').value, this.state.config.verticalPadding),
+                smoothTransition: panel.querySelector('#adhd-smooth-transition').checked,
+                persistentHighlight: panel.querySelector('#adhd-persistent').checked,
+                keyboardNav: panel.querySelector('#adhd-keyboard-nav').checked,
+                showToggleButton: panel.querySelector('#adhd-show-button').checked,
+                buttonPosition: panel.querySelector('#adhd-button-pos').value,
+                minTotalText: Math.max(0, intOr(panel.querySelector('#adhd-min-total').value, this.state.config.minTotalText))
+            };
+
+            this._snapshot = null; // committed — nothing to revert on close
             this.state.saveConfig(updates);
             this.updateHighlightStyle();
             this.updateToggleButton();
             this.hideSettings();
-            this.showFlashMessage('Settings saved!');
+            this.showFlashMessage('Settings saved');
+
+            // A lowered activation threshold may make this page qualify now
+            const hl = window.adhdHighlighter;
+            if (hl && !this.state.articleLike) {
+                this.state.lastCheckedUrl = '';
+                hl.recheckCount = 0;
+                hl.checkContentType();
+            }
         }
 
         showSettings() {
+            const panel = this.state.settingsPanel;
+
+            // Snapshot the live-previewed values so Cancel can revert them
+            this._snapshot = {
+                highlightColor: this.state.config.highlightColor,
+                verticalPadding: this.state.config.verticalPadding,
+                smoothTransition: this.state.config.smoothTransition
+            };
+
             // Re-render so panel reflects current config values
-            this.state.settingsPanel.innerHTML = this.getSettingsHTML();
+            panel.innerHTML = this.getSettingsHTML();
             this.bindSettingsEvents();
 
             if (this.state.settingsBackdrop) {
                 this.state.settingsBackdrop.classList.add('visible');
             }
-            this.state.settingsPanel.style.display = 'block';
+            panel.style.display = 'block';
 
-            // Escape key to close
+            // Move focus into the dialog; remember where it came from
+            this._prevFocus = document.activeElement;
+            const focusables = () => Array.from(panel.querySelectorAll('input, select, button'))
+                .filter(el => el.offsetParent !== null);
+            focusables()[0]?.focus();
+
+            // Escape closes; Tab is trapped inside the panel
             if (this._escapeHandler) {
                 document.removeEventListener('keydown', this._escapeHandler);
             }
             this._escapeHandler = (e) => {
-                if (e.key === 'Escape') this.hideSettings();
+                if (e.key === 'Escape') {
+                    this.hideSettings();
+                    return;
+                }
+                if (e.key !== 'Tab') return;
+                const els = focusables();
+                if (!els.length) return;
+                const first = els[0];
+                const last = els[els.length - 1];
+                if (!panel.contains(document.activeElement)) {
+                    e.preventDefault();
+                    first.focus();
+                } else if (e.shiftKey && document.activeElement === first) {
+                    e.preventDefault();
+                    last.focus();
+                } else if (!e.shiftKey && document.activeElement === last) {
+                    e.preventDefault();
+                    first.focus();
+                }
             };
             document.addEventListener('keydown', this._escapeHandler);
         }
 
         hideSettings() {
+            // Revert un-saved live preview changes (saveSettings clears the snapshot first)
+            if (this._snapshot) {
+                Object.assign(this.state.config, this._snapshot);
+                this._snapshot = null;
+                this.updateHighlightStyle();
+            }
             this.state.settingsPanel.style.display = 'none';
             if (this.state.settingsBackdrop) {
                 this.state.settingsBackdrop.classList.remove('visible');
@@ -552,19 +747,30 @@
                 document.removeEventListener('keydown', this._escapeHandler);
                 this._escapeHandler = null;
             }
+            if (this._prevFocus && typeof this._prevFocus.focus === 'function') {
+                this._prevFocus.focus();
+            }
+            this._prevFocus = null;
         }
 
-        showFlashMessage(msg) {
+        showFlashMessage(msg, duration = 2000) {
             const flash = document.createElement('div');
             flash.className = 'adhd-flash-message';
             flash.textContent = msg;
-            document.body.appendChild(flash);
 
+            // Anchor near the toggle button's corner
+            const pos = this.state.config.buttonPosition || 'bottom-right';
+            flash.style.top = pos.startsWith('top') ? '65px' : 'auto';
+            flash.style.bottom = pos.startsWith('bottom') ? '65px' : 'auto';
+            flash.style.left = pos.endsWith('left') ? '20px' : 'auto';
+            flash.style.right = pos.endsWith('right') ? '20px' : 'auto';
+
+            document.body.appendChild(flash);
             setTimeout(() => flash.classList.add('show'), 10);
             setTimeout(() => {
                 flash.classList.remove('show');
                 setTimeout(() => flash.remove(), 300);
-            }, 2000);
+            }, duration);
         }
     }
 
@@ -588,7 +794,7 @@
 
     // Helper: escape HTML special characters
     function escapeHtml(str) {
-        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     // Helper: hostname pattern match (supports exact, suffix, and "*.domain")
@@ -781,11 +987,18 @@
 
     // Main highlighter logic with performance optimizations
     class Highlighter {
+        static MAX_RECHECKS_PER_URL = 5;
+
         constructor(state, ui) {
             this.state = state;
             this.ui = ui;
             this.isMoving = false;
             this.moveTimer = null;
+            this.rafId = null;
+            this.recheckCount = 0;
+            this.lastLine = null; // last applied line, in document coordinates
+            this._keyboardAttached = false;
+            this.reducedMotionQuery = window.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null;
 
             // Create bound event handlers (stored as properties for proper removal)
             this.boundHandleMouseMove = this.handleMouseMove.bind(this);
@@ -800,7 +1013,7 @@
 
         toggle() {
             if (!this.state.articleLike) {
-                this.ui.showFlashMessage('Not available on this page');
+                this.ui.showFlashMessage('Not an article page — right-click the button for settings');
                 return;
             }
 
@@ -810,9 +1023,6 @@
             if (enabled) {
                 this.activate();
             } else {
-                if (this.state.highlightDiv) {
-                    this.hideHighlight();
-                }
                 this.deactivate();
             }
 
@@ -825,16 +1035,13 @@
             this.state.isActive = true;
 
             this.ui.createHighlightDiv();
-
-            // Set blend mode based on actual page background, not OS preference
-            if (this.state.highlightDiv) {
-                this.state.highlightDiv.style.mixBlendMode = isPageDark() ? 'screen' : 'multiply';
-            }
+            this.updateBlendMode();
 
             // Use passive listeners for performance where possible
             document.addEventListener('mousemove', this.boundHandleMouseMove, { passive: true });
-            document.addEventListener('scroll', this.boundHandleScroll, { passive: true });
-            document.addEventListener('keydown', this.boundHandleKeyboard);
+            // Capture phase: 'scroll' doesn't bubble, so this is the only way to
+            // hear inner scroll containers and invalidate the rect cache
+            document.addEventListener('scroll', this.boundHandleScroll, { passive: true, capture: true });
             document.addEventListener('mouseleave', this.boundHandleMouseLeave, { passive: true });
 
             if (this.state.config.debugMode) {
@@ -849,14 +1056,35 @@
             this.hideHighlight();
             this.state.clearCaches();
 
-            // Remove using the same bound function references
+            // Remove using the same bound function references.
+            // Keyboard stays attached (see attachKeyboard) so the toggle
+            // shortcut can re-enable after a keyboard disable.
             document.removeEventListener('mousemove', this.boundHandleMouseMove);
-            document.removeEventListener('scroll', this.boundHandleScroll);
-            document.removeEventListener('keydown', this.boundHandleKeyboard);
+            document.removeEventListener('scroll', this.boundHandleScroll, { capture: true });
             document.removeEventListener('mouseleave', this.boundHandleMouseLeave);
 
             if (this.state.config.debugMode) {
                 console.log('ADHD Line Highlighter: Deactivated');
+            }
+        }
+
+        attachKeyboard() {
+            if (this._keyboardAttached) return;
+            this._keyboardAttached = true;
+            document.addEventListener('keydown', this.boundHandleKeyboard);
+        }
+
+        detachKeyboard() {
+            if (!this._keyboardAttached) return;
+            this._keyboardAttached = false;
+            document.removeEventListener('keydown', this.boundHandleKeyboard);
+        }
+
+        // Blend mode follows the actual page background; re-run when the
+        // site flips its theme mid-session
+        updateBlendMode() {
+            if (this.state.highlightDiv) {
+                this.state.highlightDiv.style.mixBlendMode = isPageDark() ? 'screen' : 'multiply';
             }
         }
 
@@ -894,17 +1122,100 @@
                 return;
             }
 
+            this.applyLine(linePos);
+        }
+
+        applyLine(linePos) {
+            const { highlightDiv } = this.state;
+            if (!highlightDiv) return;
+
+            // Document coordinates: scroll-invariant, so J/K can resume from here
+            this.lastLine = {
+                docTop: linePos.top + window.scrollY,
+                docLeft: linePos.left + window.scrollX,
+                width: linePos.width,
+                height: linePos.height
+            };
+
             // Use requestAnimationFrame for smooth updates
-            requestAnimationFrame(() => {
+            cancelAnimationFrame(this.rafId);
+            this.rafId = requestAnimationFrame(() => {
                 highlightDiv.style.display = 'block';
-                highlightDiv.style.top = (linePos.top + window.scrollY) + 'px';
-                highlightDiv.style.left = (linePos.left + window.scrollX) + 'px';
-                highlightDiv.style.width = linePos.width + 'px';
-                highlightDiv.style.height = linePos.height + 'px';
+                highlightDiv.style.top = this.lastLine.docTop + 'px';
+                highlightDiv.style.left = this.lastLine.docLeft + 'px';
+                highlightDiv.style.width = this.lastLine.width + 'px';
+                highlightDiv.style.height = this.lastLine.height + 'px';
+            });
+        }
+
+        scrollBehavior() {
+            return this.reducedMotionQuery?.matches ? 'auto' : 'smooth';
+        }
+
+        // Keyboard line stepping (J/K): move the highlight to the adjacent
+        // text line so the highlight can lead the eyes instead of trailing
+        // the mouse.
+        stepLine(direction) {
+            if (!this.state.isActive || !this.state.config.enabled) return;
+            this.state.clearCaches();
+
+            if (this.tryStep(direction)) return;
+
+            // No further line in the viewport — bring more page in and retry
+            window.scrollBy({ top: direction * window.innerHeight * 0.4, behavior: 'auto' });
+            this.state.clearCaches();
+            this.tryStep(direction);
+        }
+
+        tryStep(direction) {
+            const { config, highlightDiv } = this.state;
+            const hasLine = this.lastLine && highlightDiv && highlightDiv.style.display === 'block';
+
+            let x, startY;
+            if (hasLine) {
+                const viewTop = this.lastLine.docTop - window.scrollY;
+                x = this.lastLine.docLeft - window.scrollX + Math.min(24, this.lastLine.width / 2);
+                startY = direction > 0 ? viewTop + this.lastLine.height + 2 : viewTop - 2;
+            } else {
+                // No current line: pick up from the first readable line in view
+                x = window.innerWidth / 2;
+                startY = window.innerHeight * 0.3;
+                direction = 1;
+            }
+
+            const stepPx = 10;
+            for (let i = 0; i < 40; i++) {
+                const y = startY + direction * i * stepPx;
+                if (y < 0 || y > window.innerHeight) break;
+                // Probe at the text's left edge first, then the viewport center
+                // (catches indented blocks like blockquotes)
+                for (const px of [x, window.innerWidth / 2]) {
+                    const el = getTextElementAt(px, y, this.state);
+                    if (!el) continue;
+                    const pos = getLinePosition(el, y, config, this.state);
+                    if (!pos) continue;
+                    if (hasLine && Math.abs((pos.top + window.scrollY) - this.lastLine.docTop) < 3) continue;
+                    this.applyLine(pos);
+                    this.keepLineInView(pos);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        keepLineInView(linePos) {
+            const margin = 80;
+            if (linePos.top >= margin && linePos.top + linePos.height <= window.innerHeight - margin) return;
+            window.scrollTo({
+                top: linePos.top + window.scrollY - window.innerHeight * 0.4,
+                behavior: this.scrollBehavior()
             });
         }
 
         hideHighlight() {
+            // Cancel any pending frame so it can't re-show the highlight after this
+            cancelAnimationFrame(this.rafId);
+            this.rafId = null;
             if (this.state.highlightDiv) {
                 this.state.highlightDiv.style.display = 'none';
             }
@@ -938,19 +1249,37 @@
         }
 
         handleKeyboard(e) {
-            const { keyboardShortcut } = this.state.config;
+            // Don't hijack keys while the user is typing
+            const t = e.target;
+            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+
+            const { keyboardShortcut, keyboardNav } = this.state.config;
             const parts = keyboardShortcut.split('+');
             const modifiers = new Set(parts.slice(0, -1).map(p => p.toLowerCase()));
             const key = parts[parts.length - 1].toLowerCase();
 
-            if (e.altKey !== modifiers.has('alt')) return;
-            if (e.ctrlKey !== modifiers.has('ctrl')) return;
-            if (e.shiftKey !== modifiers.has('shift')) return;
-            if (e.metaKey !== (modifiers.has('meta') || modifiers.has('cmd'))) return;
-            if (e.key.toLowerCase() !== key) return;
+            const matchesToggle =
+                e.altKey === modifiers.has('alt') &&
+                e.ctrlKey === modifiers.has('ctrl') &&
+                e.shiftKey === modifiers.has('shift') &&
+                e.metaKey === (modifiers.has('meta') || modifiers.has('cmd')) &&
+                e.key.toLowerCase() === key;
 
-            e.preventDefault();
-            this.toggle();
+            if (matchesToggle) {
+                e.preventDefault();
+                this.toggle();
+                return;
+            }
+
+            // J/K step the highlight line by line (no modifiers)
+            if (keyboardNav && this.state.isActive &&
+                !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+                const k = e.key.toLowerCase();
+                if (k === 'j' || k === 'k') {
+                    e.preventDefault();
+                    this.stepLine(k === 'j' ? 1 : -1);
+                }
+            }
         }
 
         handleMouseLeave() {
@@ -964,7 +1293,14 @@
             // Once a page qualifies, don't keep re-parsing on every DOM change
             // (comments loading, ads rotating) — only re-evaluate after SPA navigation.
             const url = location.href;
-            if (this.state.articleLike && url === this.state.lastCheckedUrl) return;
+            if (url === this.state.lastCheckedUrl) {
+                if (this.state.articleLike) return;
+                // Non-article page that keeps mutating (feed, dashboard): give late-loading
+                // content a few chances to qualify, then stop re-parsing entirely.
+                if (++this.recheckCount > Highlighter.MAX_RECHECKS_PER_URL) return;
+            } else {
+                this.recheckCount = 0;
+            }
             this.state.lastCheckedUrl = url;
 
             const isArticle = isArticleLike(this.state);
@@ -977,9 +1313,12 @@
 
                 if (isArticle) {
                     this.ui.createToggleButton(); // show button if page became article-like (SPA nav)
+                    this.attachKeyboard();
                     if (this.state.config.enabled) this.activate();
+                    this.updateBlendMode();
                 } else {
                     this.deactivate();
+                    this.detachKeyboard();
                 }
                 this.ui.updateToggleButton();
             }
@@ -1045,6 +1384,8 @@
         GM_registerMenuCommand('Force Enable on This Site', () => {
             if (!state.articleLike) {
                 state.articleLike = true;
+                ui.createToggleButton();
+                highlighter.attachKeyboard();
                 if (state.config.enabled) {
                     highlighter.activate();
                 }
@@ -1059,11 +1400,31 @@
         state.articleLike = isArticleLike(state);
         if (state.articleLike) {
             ui.createToggleButton();
+            highlighter.attachKeyboard();
             if (state.config.enabled) {
                 highlighter.activate();
+
+                // One-time hint so the shortcuts are discoverable
+                if (!GM_getValue('adhd_intro_shown')) {
+                    GM_setValue('adhd_intro_shown', true);
+                    ui.showFlashMessage(
+                        `Line highlighter is on — ${state.config.keyboardShortcut} toggles it, J/K step lines, right-click the button for settings`,
+                        6000
+                    );
+                }
             }
         }
         ui.updateToggleButton();
+
+        // Re-check the blend mode when the site or OS flips its theme:
+        // OS-level preference changes...
+        window.matchMedia?.('(prefers-color-scheme: dark)')
+            .addEventListener?.('change', () => highlighter.updateBlendMode());
+        // ...and site-level toggles, which typically swap a class on <html>/<body>
+        const themeObserver = new MutationObserver(throttle(() => highlighter.updateBlendMode(), 500));
+        for (const el of [document.documentElement, document.body]) {
+            themeObserver.observe(el, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+        }
 
         // Throttled mutation observer for dynamic content
         const throttledCheck = throttle(() => highlighter.checkContentType(), 1000);

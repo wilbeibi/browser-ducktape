@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
 // @namespace    http://tampermonkey.net/
-// @version      1.3.0
+// @version      1.4.0
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally.
 // @author       You
 // @match        *://*/*
@@ -328,6 +328,7 @@ html.llmtr-hide .llmtr { display: none; }
     padding: 10px 12px;
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
 }
+.llmtr-sel-pop.llmtr-sel-wide { max-width: min(520px, 80vw); }
 .llmtr-sel-pop-body { white-space: pre-wrap; word-break: break-word; }
 .llmtr-sel-title {
     margin-bottom: 6px;
@@ -1070,6 +1071,23 @@ html.llmtr-hide .llmtr { display: none; }
         selRaf = requestAnimationFrame(() => { selRaf = null; repositionSelUI(); });
     }
 
+    // Short, punctuation-free selections are dictionary lookups; anything
+    // sentence-like gets a plain translation instead of the dictionary card.
+    function isDictionaryQuery(text) {
+        if (text.length > 60) return false;
+        if (/[.!?;,:。！？；，：\n]/.test(text)) return false;
+        return text.split(/\s+/).length <= 8;
+    }
+
+    function selectionTranslatePrompt(lang) {
+        return `You are a professional translation engine. Translate the user's text into ${lang}.
+
+Rules:
+- Translate naturally and fluently, preserving meaning, tone, and register.
+- Keep inline code, commands, URLs, file paths, math, and brand/product names as-is.
+- Output ONLY the translation — no explanations, notes, or quotes.`;
+    }
+
     function selectionPrompt(lang) {
         return `You are a concise bilingual learner's dictionary. Explain the user's selected text in ${lang}.
 
@@ -1120,10 +1138,10 @@ Rules:
         placeSelBtn(info.rect);
     }
 
-    function showSelPopup(rect) {
+    function showSelPopup(rect, wide) {
         removeSelPop();
         const p = document.createElement('div');
-        p.className = 'llmtr-sel-pop llmtr-ui';
+        p.className = 'llmtr-sel-pop llmtr-ui' + (wide ? ' llmtr-sel-wide' : '');
         const body = document.createElement('div');
         body.className = 'llmtr-sel-pop-body llmtr-sel-loading';
         body.textContent = '· · ·';
@@ -1185,10 +1203,10 @@ Rules:
         }
     }
 
-    function setPopupText(text, loading, error) {
+    function setPopupText(text, loading, error, plain) {
         if (!selPop) return;
         const body = selPop._body;
-        if (error) body.textContent = text;
+        if (error || plain) body.textContent = text;
         else renderSelectionPopup(body, text);
         body.classList.toggle('llmtr-sel-loading', !!loading);
         body.classList.toggle('llmtr-sel-error', !!error);
@@ -1199,25 +1217,27 @@ Rules:
         removeSelBtn();
         const cfg = getConfig();
         if (!cfg.key) { showSettingsModal(() => {}); return; }
-        showSelPopup(rect);
-        selAnchor = range; // removeSelBtn cleared it while no popup existed
 
         const src = text.slice(0, MAX_SEGMENT_CHARS);
-        const cacheSrc = 'selection-dictionary-v1\x00' + src;
+        const dict = isDictionaryQuery(src);
+        showSelPopup(rect, !dict);
+        selAnchor = range; // removeSelBtn cleared it while no popup existed
+
+        const cacheSrc = (dict ? 'selection-dictionary-v1' : 'selection-translate-v1') + '\x00' + src;
         const cached = cacheGet(cacheSrc, cfg);
-        if (cached) { setPopupText(cached, false); return; }
+        if (cached) { setPopupText(cached, false, false, !dict); return; }
 
         streamChat({
             ...cfg,
             max_tokens: Math.min(4000, 200 + src.length * 2),
             messages: [
-                { role: 'system', content: selectionPrompt(cfg.lang) },
+                { role: 'system', content: dict ? selectionPrompt(cfg.lang) : selectionTranslatePrompt(cfg.lang) },
                 { role: 'user', content: src }
             ],
-            onText(partial) { setPopupText(partial, true); }
+            onText(partial) { setPopupText(partial, true, false, !dict); }
         }).then((full) => {
             const out = (full || '').trim();
-            setPopupText(out || '(no translation)', false);
+            setPopupText(out || '(no translation)', false, false, !dict);
             if (out) cachePut(cacheSrc, out, cfg);
         }).catch((err) => {
             setPopupText('⚠ ' + err.message, false, true);

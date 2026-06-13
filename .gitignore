@@ -2,3 +2,5 @@
 *.log
 .claude/
 .codex/
+.omo/
+.playwright-mcp/

@@ -13,7 +13,7 @@ Userscripts for patching up daily browsing annoyances.
 - **`adhd_reader.js`** — Highlights the line you're reading. Keeps your eyes from wandering. Only activates on text-dense article pages — feeds, dashboards, and app UIs are left alone.
   ![Reading Ruler Demo](screenshots/highlight.png)
 
-- **`worth_watching.js`** — During work hours, blurs YouTube/Bilibili and asks a random question like *"Was this video part of your plan today?"* before you can watch. 10-second cooldown to prevent autopilot clicks. Skip the timer for study/learning videos.
+- **`worth_watching.js`** — During work hours, blurs YouTube/Bilibili and asks a purpose-focused question before you can watch. Leaving is the primary action; continuing requires a 10-second pause plus a short written intention.
 
 ### 🤖 AI Tools
 - **`inline_translate.js`** — Bilingual inline translation. Click the floating 译 button (or hit `Ctrl+T`) and every paragraph gets its Chinese translation right below the original. Also does text-selection translation (划词翻译) — select any text for an instant dictionary-style popup. Streaming, lazy loading, and local caching keep it fast. Works with any OpenAI-compatible API; right-click the button for settings.

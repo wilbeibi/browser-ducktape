@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Video Watch Confirmation
 // @namespace    http://tampermonkey.net/
-// @version      1.2
-// @description  Asks whether a video is worth watching during work hours on YouTube and Bilibili, with background blur
+// @version      2.0
+// @description  Adds an intentionality pause before work-hours video watching on YouTube and Bilibili, with watch-later substitution, escalating friction, self-monitoring stats, and a timebox check-in.
 // @author       You
 // @match        https://www.youtube.com/*
 // @match        https://youtube.com/*
@@ -17,18 +17,30 @@
 (function() {
     'use strict';
 
+    const MIN_INTENTION_CHARS = 8;
+    // Where "Leave" sends you — anywhere but the recommendation feed
+    const LEAVE_URL = 'about:blank';
+    // Countdown escalates with each video continued today; index = videos already watched
+    const COUNTDOWN_STEPS = [5, 10, 20];
+    const COUNTDOWN_MAX = 30;
+    const DEFAULT_TIMEBOX_MINUTES = 15;
+    const SNOOZE_MINUTES = 5;
+    const LOG_KEY = 'vc:log';
+    const WATCH_LATER_KEY = 'vc:watchLater';
+    const LOG_LIMIT = 50;
+
     const PROMPTS = [
-        'Was this video part of your plan today?',
-        'What was the task you were working on?',
-        'Will this help you finish what you set out to do?',
-        'Is this a detour or a destination?',
-        'How did you get here — search or rabbit hole?',
-        'If you skip this, will you even notice tonight?',
-        'Are you here on purpose or did a link bring you?',
-        'What would you tell your morning self about this?',
-        'Does this move the needle on anything you care about?',
-        'You had momentum — is this worth breaking it?',
-        'Close your eyes: what were you doing 2 minutes ago?',
+        'What job is this video helping you finish?',
+        'What will be different after watching this?',
+        'What is the next task this video supports?',
+        'What question are you trying to answer?',
+        'What would make this worth the time?',
+        'How will you know when you have enough?',
+        'What were you doing before this opened?',
+        'If you watch, what is the timebox?',
+        'Is this planned learning or a pleasant detour?',
+        'What would future-you want you to do here?',
+        'What is the smallest useful part to watch?',
     ];
 
     const isWithinWorkingHours = () => {
@@ -62,204 +74,597 @@
     const markConfirmed = () =>
         sessionStorage.setItem('videoConfirmed:' + videoKey(), '1');
 
+    // --- Decision log (self-monitoring) ---
+
+    const readJSON = (storage, key, fallback) => {
+        try {
+            const parsed = JSON.parse(storage.getItem(key));
+            return parsed === null || parsed === undefined ? fallback : parsed;
+        } catch {
+            return fallback;
+        }
+    };
+
+    const writeJSON = (storage, key, value) =>
+        storage.setItem(key, JSON.stringify(value));
+
+    const readLog = () => readJSON(localStorage, LOG_KEY, []);
+
+    // action: 'watched' | 'left' | 'saved' | 'done'
+    const logDecision = (action, intention) => {
+        const log = readLog();
+        log.push({ t: Date.now(), key: videoKey(), action, intention: intention || '' });
+        writeJSON(localStorage, LOG_KEY, log.slice(-LOG_LIMIT));
+    };
+
+    const isSameLocalDay = (ts) => {
+        const a = new Date(ts);
+        const b = new Date();
+        return a.getFullYear() === b.getFullYear() &&
+               a.getMonth() === b.getMonth() &&
+               a.getDate() === b.getDate();
+    };
+
+    const todayStats = () => {
+        const log = readLog();
+        const today = log.filter(e => isSameLocalDay(e.t));
+        const watchedToday = today.filter(e => e.action === 'watched').length;
+        const recent = log.slice(-3);
+        const recentLeft = recent.filter(e => e.action !== 'watched').length;
+        let leaveStreak = 0;
+        for (let i = log.length - 1; i >= 0; i--) {
+            if (log[i].action === 'watched') break;
+            leaveStreak++;
+        }
+        return { promptNumber: today.length + 1, watchedToday, recent, recentLeft, leaveStreak };
+    };
+
+    const countdownFor = (watchedToday) =>
+        COUNTDOWN_STEPS[watchedToday] !== undefined ? COUNTDOWN_STEPS[watchedToday] : COUNTDOWN_MAX;
+
+    // Reject copy-paste / keyboard-mash intentions: must differ from the last
+    // few entries and contain some variety
+    const normalizeIntention = (s) =>
+        (s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+
+    const intentionProblem = (text) => {
+        if (text.trim().length < MIN_INTENTION_CHARS) return 'too-short';
+        const normalized = normalizeIntention(text);
+        if (new Set(normalized).size < 3) return 'low-effort';
+        const recent = readLog().slice(-5).map(e => normalizeIntention(e.intention));
+        if (recent.includes(normalized)) return 'repeated';
+        return null;
+    };
+
+    // Pull a stated timebox out of the intention text ("watch 10 min for...")
+    const timeboxMinutes = (intention) => {
+        const m = (intention || '').match(/(\d+)/);
+        if (!m) return DEFAULT_TIMEBOX_MINUTES;
+        return Math.min(60, Math.max(5, parseInt(m[1], 10)));
+    };
+
+    const checkinKey = () => 'vc:checkin:' + videoKey();
+
+    const saveForLater = (intention) => {
+        const list = readJSON(localStorage, WATCH_LATER_KEY, []);
+        if (!list.some(e => e.url === window.location.href)) {
+            list.push({ url: window.location.href, title: document.title, intention: intention || '', t: Date.now() });
+            writeJSON(localStorage, WATCH_LATER_KEY, list);
+        }
+    };
+
+    const leavePage = () => {
+        try {
+            window.location.replace(LEAVE_URL);
+        } catch {
+            if (window.history.length > 1) window.history.back();
+            else window.close();
+        }
+    };
+
     let activeOverlay = null;
     let playBlocker = null;
     let countdownTimer = null;
     let visibilityHandler = null;
+    let bodyObserver = null;
+    let checkinTimer = null;
 
     function cleanup() {
         if (activeOverlay) { activeOverlay.remove(); activeOverlay = null; }
-        const blur = document.getElementById('video-confirm-blur');
-        if (blur) blur.remove();
+        const style = document.getElementById('video-confirm-style');
+        if (style) style.remove();
         if (playBlocker) { document.removeEventListener('play', playBlocker, true); playBlocker = null; }
         if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
         if (visibilityHandler) { document.removeEventListener('visibilitychange', visibilityHandler); visibilityHandler = null; }
+        if (bodyObserver) { bodyObserver.disconnect(); bodyObserver = null; }
     }
 
-    function showConfirmation() {
-        // cleanup() either way — an overlay from a previous video must not
-        // survive SPA navigation to a page that doesn't need one
-        cleanup();
-        if (!isWithinWorkingHours() || !isVideoPage() || isConfirmed()) return;
+    function clearCheckinTimer() {
+        if (checkinTimer) { clearTimeout(checkinTimer); checkinTimer = null; }
+    }
 
-        // Block video playback via capture-phase listener
-        playBlocker = (e) => { e.target.pause(); e.target.currentTime = 0; };
-        document.addEventListener('play', playBlocker, true);
-        // Pause anything already playing
-        document.querySelectorAll('video').forEach(v => { v.pause(); v.currentTime = 0; });
-
-        // Blur
-        const blurStyle = document.createElement('style');
-        blurStyle.id = 'video-confirm-blur';
-        blurStyle.textContent = `
+    function injectStyle() {
+        if (document.getElementById('video-confirm-style')) return;
+        const style = document.createElement('style');
+        style.id = 'video-confirm-style';
+        style.textContent = `
             body > *:not(#video-confirm-overlay) {
                 filter: blur(8px);
                 transition: filter 0.3s ease-in-out;
+            }
+            #video-confirm-overlay {
+                position: fixed;
+                inset: 0;
+                z-index: 999999;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+                background: rgba(14, 16, 20, 0.52);
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                box-sizing: border-box;
+            }
+            #video-confirm-overlay * {
+                box-sizing: border-box;
+            }
+            .vc-dialog {
+                width: min(440px, 100%);
+                padding: 28px;
+                border: 1px solid rgba(15, 23, 42, 0.08);
+                border-radius: 10px;
+                background: #fff;
+                color: #1f2937;
+                box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+                animation: slideIn 0.24s ease-out;
+            }
+            .vc-kicker {
+                margin: 0 0 8px;
+                color: #6b7280;
+                font-size: 12px;
+                font-weight: 700;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+            }
+            .vc-question {
+                margin: 0 0 10px;
+                color: #111827;
+                font-size: 22px;
+                font-weight: 650;
+                line-height: 1.3;
+            }
+            .vc-helper {
+                margin: 0 0 12px;
+                color: #4b5563;
+                font-size: 14px;
+                line-height: 1.5;
+            }
+            .vc-stats {
+                margin: 0 0 18px;
+                color: #6b7280;
+                font-size: 13px;
+                line-height: 1.5;
+            }
+            .vc-stats strong {
+                color: #166534;
+                font-weight: 650;
+            }
+            .vc-label {
+                display: block;
+                margin-bottom: 6px;
+                color: #374151;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            .vc-input {
+                width: 100%;
+                min-height: 72px;
+                margin-bottom: 6px;
+                padding: 10px 12px;
+                resize: vertical;
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                color: #111827;
+                font: inherit;
+                line-height: 1.4;
+            }
+            .vc-input:focus {
+                border-color: #2563eb;
+                box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+                outline: none;
+            }
+            .vc-input-hint {
+                min-height: 18px;
+                margin: 0 0 10px;
+                color: #b91c1c;
+                font-size: 12px;
+                line-height: 1.4;
+            }
+            .vc-countdown-track {
+                width: 100%;
+                height: 6px;
+                margin-bottom: 18px;
+                overflow: hidden;
+                border-radius: 999px;
+                background: #e5e7eb;
+            }
+            .vc-countdown-fill {
+                height: 100%;
+                width: 100%;
+                background: #f59e0b;
+                transition: width 1s linear;
+            }
+            .vc-actions {
+                display: flex;
+                gap: 10px;
+                justify-content: flex-end;
+                flex-wrap: wrap;
+            }
+            .vc-button {
+                min-width: 132px;
+                padding: 10px 16px;
+                border-radius: 8px;
+                border: 1px solid transparent;
+                font-size: 15px;
+                font-weight: 650;
+                cursor: pointer;
+                transition: background 0.16s, border-color 0.16s, color 0.16s, opacity 0.16s;
+            }
+            .vc-leave {
+                background: #166534;
+                color: #fff;
+            }
+            .vc-leave:hover {
+                background: #14532d;
+            }
+            .vc-save {
+                background: #fffbeb;
+                border-color: #f59e0b;
+                color: #92400e;
+            }
+            .vc-save:hover {
+                background: #fef3c7;
+            }
+            .vc-continue {
+                background: #fff;
+                border-color: #d1d5db;
+                color: #374151;
+            }
+            .vc-continue:not(:disabled):hover {
+                background: #f9fafb;
+                border-color: #9ca3af;
+            }
+            .vc-continue:disabled {
+                opacity: 0.48;
+                cursor: not-allowed;
             }
             @keyframes slideIn {
                 from { transform: translateY(-20px); opacity: 0; }
                 to   { transform: translateY(0);     opacity: 1; }
             }
+            @media (max-width: 480px) {
+                .vc-dialog {
+                    padding: 22px;
+                }
+                .vc-actions {
+                    flex-direction: column;
+                }
+                .vc-button {
+                    width: 100%;
+                }
+            }
         `;
-        (document.head || document.documentElement).appendChild(blurStyle);
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    function mountOverlay(overlay) {
+        activeOverlay = overlay;
+        if (document.body) {
+            document.body.appendChild(overlay);
+        } else {
+            bodyObserver = new MutationObserver(() => {
+                if (document.body) {
+                    document.body.appendChild(overlay);
+                    bodyObserver.disconnect();
+                    bodyObserver = null;
+                }
+            });
+            bodyObserver.observe(document.documentElement, { childList: true, subtree: true });
+        }
+    }
+
+    function showConfirmation() {
+        // Block video playback via capture-phase listener
+        playBlocker = (e) => {
+            if (e.target && typeof e.target.pause === 'function') {
+                e.target.pause();
+                e.target.currentTime = 0;
+            }
+        };
+        document.addEventListener('play', playBlocker, true);
+        // Pause anything already playing
+        document.querySelectorAll('video').forEach(v => { v.pause(); v.currentTime = 0; });
+
+        injectStyle();
+
+        const stats = todayStats();
+        const countdownSeconds = countdownFor(stats.watchedToday);
 
         // Overlay
         const overlay = document.createElement('div');
         overlay.id = 'video-confirm-overlay';
-        activeOverlay = overlay;
-        overlay.style.cssText = `
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0, 0, 0, 0.4); z-index: 999999;
-            display: flex; align-items: center; justify-content: center;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-        `;
 
         // Dialog
         const dialog = document.createElement('div');
-        dialog.style.cssText = `
-            background: white; border-radius: 12px; padding: 32px;
-            box-shadow: 0 10px 50px rgba(0, 0, 0, 0.3);
-            text-align: center; max-width: 400px; animation: slideIn 0.3s ease-out;
-        `;
+        dialog.className = 'vc-dialog';
 
-        // Random prompt
+        const kicker = document.createElement('p');
+        kicker.className = 'vc-kicker';
+        kicker.textContent = 'Intentional pause';
+
         const question = document.createElement('h2');
+        question.className = 'vc-question';
         question.textContent = PROMPTS[Math.floor(Math.random() * PROMPTS.length)];
-        question.style.cssText = `
-            margin: 0 0 24px 0; color: #333;
-            font-size: 20px; font-weight: 600; line-height: 1.4;
-        `;
+
+        const helper = document.createElement('p');
+        helper.className = 'vc-helper';
+        helper.textContent = 'Leave, save it for tonight, or name the concrete reason for continuing.';
+
+        const statsLine = document.createElement('p');
+        statsLine.className = 'vc-stats';
+        const parts = [`Work-hours video #${stats.promptNumber} today`];
+        if (stats.recent.length > 0) {
+            parts.push(`walked away from ${stats.recentLeft} of the last ${stats.recent.length}`);
+        }
+        statsLine.textContent = parts.join(' · ');
+        if (stats.leaveStreak >= 2) {
+            const streak = document.createElement('strong');
+            streak.textContent = ` You've left ${stats.leaveStreak} in a row.`;
+            statsLine.appendChild(streak);
+        }
+        if (stats.watchedToday > 0) {
+            statsLine.appendChild(document.createTextNode(
+                ` The pause grows with each video (now ${countdownSeconds}s).`));
+        }
+
+        const intentionLabel = document.createElement('label');
+        intentionLabel.className = 'vc-label';
+        intentionLabel.htmlFor = 'video-confirm-intention';
+        intentionLabel.textContent = 'I am watching this to...';
+
+        const intentionInput = document.createElement('textarea');
+        intentionInput.id = 'video-confirm-intention';
+        intentionInput.className = 'vc-input';
+        intentionInput.autocomplete = 'off';
+        intentionInput.placeholder = 'finish a task, answer a question... include minutes (e.g. "10 min") to set your timebox';
+
+        const inputHint = document.createElement('p');
+        inputHint.className = 'vc-input-hint';
 
         // Buttons
         const buttonContainer = document.createElement('div');
-        buttonContainer.style.cssText = 'display: flex; gap: 12px; justify-content: center;';
+        buttonContainer.className = 'vc-actions';
 
-        const COUNTDOWN_SECONDS = 10;
-        let remaining = COUNTDOWN_SECONDS;
+        const leaveButton = document.createElement('button');
+        leaveButton.type = 'button';
+        leaveButton.className = 'vc-button vc-leave';
+        leaveButton.textContent = 'Leave now';
 
-        const yesButton = document.createElement('button');
-        yesButton.textContent = `Yes (${COUNTDOWN_SECONDS})`;
-        yesButton.disabled = true;
-        yesButton.style.cssText = `
-            padding: 10px 28px; background: #A5D6A7; color: white; border: none;
-            border-radius: 6px; font-size: 16px; font-weight: 500;
-            cursor: not-allowed; transition: background 0.2s; min-width: 100px; opacity: 0.6;
-        `;
-        yesButton.onmouseover = () => { if (!yesButton.disabled) yesButton.style.background = '#45a049'; };
-        yesButton.onmouseout = () => { yesButton.style.background = yesButton.disabled ? '#A5D6A7' : '#4CAF50'; };
+        const saveButton = document.createElement('button');
+        saveButton.type = 'button';
+        saveButton.className = 'vc-button vc-save';
+        saveButton.textContent = 'Save for tonight';
 
-        const noButton = document.createElement('button');
-        noButton.textContent = 'No';
-        noButton.style.cssText = `
-            padding: 10px 28px; background: #f44336; color: white; border: none;
-            border-radius: 6px; font-size: 16px; font-weight: 500;
-            cursor: pointer; transition: background 0.2s; min-width: 100px;
-        `;
-        noButton.onmouseover = () => noButton.style.background = '#da190b';
-        noButton.onmouseout = () => noButton.style.background = '#f44336';
+        const continueButton = document.createElement('button');
+        continueButton.type = 'button';
+        continueButton.className = 'vc-button vc-continue';
+        continueButton.disabled = true;
 
-        // Countdown bar
+        // Countdown bar — hidden until the intention is valid, so the wait
+        // can't run in parallel with the typing
         const countdownTrack = document.createElement('div');
-        countdownTrack.style.cssText = `
-            width: 100%; height: 6px; background: rgba(76, 175, 80, 0.2);
-            border-radius: 999px; margin-bottom: 20px; overflow: hidden;
-        `;
+        countdownTrack.className = 'vc-countdown-track';
+        countdownTrack.style.display = 'none';
         const countdownFill = document.createElement('div');
-        countdownFill.style.cssText = `
-            height: 100%; width: 100%; background: rgba(76, 175, 80, 0.8);
-            transition: width 1s linear;
-        `;
+        countdownFill.className = 'vc-countdown-fill';
         countdownTrack.appendChild(countdownFill);
+
+        let remaining = countdownSeconds;
+        let countdownStarted = false;
+
+        const updateContinueState = () => {
+            const problem = intentionProblem(intentionInput.value);
+            inputHint.textContent =
+                problem === 'repeated'  ? 'You’ve used this reason before — be specific to this video.' :
+                problem === 'low-effort' ? 'That doesn’t look like a real reason.' : '';
+
+            if (!countdownStarted) {
+                if (problem === null) {
+                    countdownStarted = true;
+                    countdownTrack.style.display = '';
+                    countdownTimer = setInterval(tick, 1000);
+                } else {
+                    continueButton.disabled = true;
+                    continueButton.textContent = 'Continue';
+                    return;
+                }
+            }
+            continueButton.disabled = !(remaining <= 0 && problem === null);
+            continueButton.textContent = remaining > 0 ? `Continue (${remaining})` : 'Continue intentionally';
+        };
 
         const tick = () => {
             if (document.hidden) return;
             remaining -= 1;
             if (remaining > 0) {
-                yesButton.textContent = `Yes (${remaining})`;
-                countdownFill.style.width = `${(remaining / COUNTDOWN_SECONDS) * 100}%`;
+                countdownFill.style.width = `${(remaining / countdownSeconds) * 100}%`;
+                updateContinueState();
                 return;
             }
             clearInterval(countdownTimer);
             countdownTimer = null;
-            yesButton.disabled = false;
-            yesButton.style.opacity = '1';
-            yesButton.style.cursor = 'pointer';
-            yesButton.textContent = 'Yes';
-            yesButton.style.background = '#4CAF50';
+            remaining = 0;
             countdownTrack.style.display = 'none';
+            updateContinueState();
         };
         // Switching away resets the timer — no waiting it out in another tab
         visibilityHandler = () => {
             if (!document.hidden && countdownTimer) {
-                remaining = COUNTDOWN_SECONDS;
-                yesButton.textContent = `Yes (${remaining})`;
+                remaining = countdownSeconds;
                 countdownFill.style.width = '100%';
+                updateContinueState();
             }
         };
         document.addEventListener('visibilitychange', visibilityHandler);
-        countdownTimer = setInterval(tick, 1000);
+        intentionInput.addEventListener('input', updateContinueState);
+        updateContinueState();
 
-        const dismiss = (confirmed) => {
-            if (confirmed) {
-                markConfirmed();
-                cleanup();
-            } else {
-                cleanup();
-                if (window.history.length > 1) window.history.back();
-                else window.close();
-            }
+        leaveButton.onclick = () => {
+            logDecision('left', intentionInput.value.trim());
+            cleanup();
+            leavePage();
+        };
+        saveButton.onclick = () => {
+            saveForLater(intentionInput.value.trim());
+            logDecision('saved', intentionInput.value.trim());
+            cleanup();
+            leavePage();
+        };
+        continueButton.onclick = () => {
+            if (continueButton.disabled) return;
+            const intention = intentionInput.value.trim();
+            markConfirmed();
+            logDecision('watched', intention);
+            writeJSON(sessionStorage, checkinKey(), {
+                intention,
+                due: Date.now() + timeboxMinutes(intention) * 60 * 1000,
+            });
+            cleanup();
+            scheduleCheckin();
         };
 
-        yesButton.onclick = () => dismiss(true);
-        noButton.onclick = () => dismiss(false);
-
-        // Study shortcut — skips countdown, still requires conscious click
-        const studyLink = document.createElement('a');
-        studyLink.textContent = 'This is for study/learning';
-        studyLink.href = '#';
-        studyLink.style.cssText = `
-            display: block; margin-top: 16px; font-size: 13px;
-            color: #888; text-decoration: underline; cursor: pointer;
-        `;
-        studyLink.onclick = (e) => { e.preventDefault(); dismiss(true); };
-
         // Assemble
-        buttonContainer.appendChild(yesButton);
-        buttonContainer.appendChild(noButton);
+        buttonContainer.appendChild(leaveButton);
+        buttonContainer.appendChild(saveButton);
+        buttonContainer.appendChild(continueButton);
+        dialog.appendChild(kicker);
         dialog.appendChild(question);
+        dialog.appendChild(helper);
+        dialog.appendChild(statsLine);
+        dialog.appendChild(intentionLabel);
+        dialog.appendChild(intentionInput);
+        dialog.appendChild(inputHint);
         dialog.appendChild(countdownTrack);
         dialog.appendChild(buttonContainer);
-        dialog.appendChild(studyLink);
         overlay.appendChild(dialog);
 
-        if (document.body) {
-            document.body.appendChild(overlay);
-        } else {
-            const obs = new MutationObserver(() => {
-                if (document.body) { document.body.appendChild(overlay); obs.disconnect(); }
+        mountOverlay(overlay);
+    }
+
+    // --- Timebox check-in: the stated intention comes back to collect ---
+
+    function scheduleCheckin() {
+        clearCheckinTimer();
+        const entry = readJSON(sessionStorage, checkinKey(), null);
+        if (!entry || !entry.due) return;
+        const delay = Math.max(0, entry.due - Date.now());
+        checkinTimer = setTimeout(showCheckin, delay);
+    }
+
+    function showCheckin() {
+        const entry = readJSON(sessionStorage, checkinKey(), null);
+        if (!entry || !isVideoPage()) return;
+        cleanup();
+
+        document.querySelectorAll('video').forEach(v => v.pause());
+        injectStyle();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'video-confirm-overlay';
+
+        const dialog = document.createElement('div');
+        dialog.className = 'vc-dialog';
+
+        const kicker = document.createElement('p');
+        kicker.className = 'vc-kicker';
+        kicker.textContent = 'Timebox check-in';
+
+        const question = document.createElement('h2');
+        question.className = 'vc-question';
+        question.textContent = 'Did you get what you came for?';
+
+        const helper = document.createElement('p');
+        helper.className = 'vc-helper';
+        helper.textContent = entry.intention
+            ? `You said: “${entry.intention}”`
+            : 'Your timebox is up.';
+
+        const buttonContainer = document.createElement('div');
+        buttonContainer.className = 'vc-actions';
+
+        const doneButton = document.createElement('button');
+        doneButton.type = 'button';
+        doneButton.className = 'vc-button vc-leave';
+        doneButton.textContent = 'Done — leave';
+        doneButton.onclick = () => {
+            sessionStorage.removeItem(checkinKey());
+            logDecision('done', entry.intention);
+            cleanup();
+            leavePage();
+        };
+
+        const moreButton = document.createElement('button');
+        moreButton.type = 'button';
+        moreButton.className = 'vc-button vc-continue';
+        moreButton.textContent = `${SNOOZE_MINUTES} more minutes`;
+        moreButton.onclick = () => {
+            writeJSON(sessionStorage, checkinKey(), {
+                intention: entry.intention,
+                due: Date.now() + SNOOZE_MINUTES * 60 * 1000,
             });
-            obs.observe(document.documentElement, { childList: true, subtree: true });
-        }
+            cleanup();
+            scheduleCheckin();
+        };
+
+        buttonContainer.appendChild(doneButton);
+        buttonContainer.appendChild(moreButton);
+        dialog.appendChild(kicker);
+        dialog.appendChild(question);
+        dialog.appendChild(helper);
+        dialog.appendChild(buttonContainer);
+        overlay.appendChild(dialog);
+
+        mountOverlay(overlay);
     }
 
     // --- Entry points ---
 
-    // Initial page load
-    const tryShow = () => {
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', showConfirmation);
-        } else {
+    function onPageSettled() {
+        // cleanup() either way — an overlay from a previous video must not
+        // survive SPA navigation to a page that doesn't need one
+        cleanup();
+        clearCheckinTimer();
+        if (!isVideoPage()) return;
+        if (isWithinWorkingHours() && !isConfirmed()) {
             showConfirmation();
+            return;
         }
-    };
-    tryShow();
+        // Already confirmed (or off-hours): a pending timebox may still be due
+        scheduleCheckin();
+    }
+
+    // Initial page load
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', onPageSettled);
+    } else {
+        onPageSettled();
+    }
 
     // YouTube SPA navigation
     let lastUrl = location.href;
     const onNavigate = () => {
         if (location.href !== lastUrl) {
             lastUrl = location.href;
-            showConfirmation();
+            onPageSettled();
         }
     };
     window.addEventListener('yt-navigate-finish', onNavigate);
