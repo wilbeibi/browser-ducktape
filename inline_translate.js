@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
 // @namespace    http://tampermonkey.net/
-// @version      1.4.0
-// @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally.
+// @version      1.5.0
+// @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       You
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -116,6 +116,11 @@ Rules:
     line-height: inherit;
     white-space: normal;
     opacity: 0.94;
+}
+/* one wrapper per <br><br>-separated paragraph on old-web pages */
+.llmtr-seg {
+    display: block;
+    margin: 0 0 1em;
 }
 .llmtr-loading {
     opacity: 0.45;
@@ -407,6 +412,16 @@ html.llmtr-hide .llmtr { display: none; }
         return el.querySelector(BLOCKY_SELECTOR) !== null;
     }
 
+    // True when the element carries its own text directly (not only via child
+    // elements) — lets a <font>/<center>/bare wrapper that holds prose count as
+    // a translatable leaf even though its tag isn't in the block whitelist.
+    function hasDirectText(el) {
+        for (let n = el.firstChild; n; n = n.nextSibling) {
+            if (n.nodeType === 3 && /\p{L}/u.test(n.nodeValue)) return true;
+        }
+        return false;
+    }
+
     function targetIsChinese() {
         const lang = getConfig().lang.toLowerCase();
         return lang.includes('chinese') || lang.includes('中文') || lang.includes('zh');
@@ -448,19 +463,99 @@ html.llmtr-hide .llmtr { display: none; }
         if (el.isContentEditable) return;
         if ((tag === 'HEADER' || tag === 'FOOTER') && !el.closest('article, main')) return;
 
-        const isLeafCandidate =
-            (BLOCK_TAGS.has(tag) || tag === 'DIV') && !hasBlockChild(el);
+        // A leaf is any element with no block-level descendant that carries its
+        // own text — not just whitelisted tags. This covers old-web pages that
+        // keep paragraphs in <font>/<center>/bare wrappers with no semantic tags
+        // (paulgraham.com, antirez's old blog, mailing-list archives, ...).
+        const isLeafCandidate = !hasBlockChild(el) &&
+            (BLOCK_TAGS.has(tag) || tag === 'DIV' || hasDirectText(el));
 
         if (isLeafCandidate) {
-            if (!el.dataset.llmtrSeen) {
-                el.dataset.llmtrSeen = '1';
-                if (qualifies(el)) out.push(el);
+            // A single leaf may pack several paragraphs separated by <br><br>.
+            // Split those into one <div> per paragraph (kept inside `el`, so the
+            // wrappers become ordinary leaves the rest of the pipeline handles);
+            // then fall through to collect them via the normal recursion.
+            if (!el.dataset.llmtrSplit && splitBrParagraphs(el)) {
+                // fall through to child recursion below
+            } else {
+                if (!el.dataset.llmtrSeen) {
+                    el.dataset.llmtrSeen = '1';
+                    if (qualifies(el)) out.push(el);
+                }
+                return;
             }
-            return;
         }
         for (let c = el.firstElementChild; c; c = c.nextElementSibling) {
             collect(c, out);
         }
+    }
+
+    // Within a text leaf (all-inline subtree), find the element that actually
+    // holds the <br><br> paragraph breaks — which may be a descendant, e.g.
+    // <td> wraps a single <font> that carries the whole essay (paulgraham.com).
+    // Returns the element with the most direct <br> children that also bears
+    // its own text, or null when there's no real paragraph structure.
+    function brParagraphHost(el) {
+        let best = null, bestBr = 0;
+        (function scan(node) {
+            let directBr = 0;
+            for (let c = node.firstChild; c; c = c.nextSibling)
+                if (c.nodeType === 1 && c.tagName === 'BR') directBr++;
+            if (directBr > bestBr && hasDirectText(node)) { best = node; bestBr = directBr; }
+            for (let c = node.firstElementChild; c; c = c.nextElementSibling)
+                if (!SKIP_TAGS.has(c.tagName)) scan(c);
+        })(el);
+        return bestBr >= 2 ? best : null;
+    }
+
+    // Split a text leaf whose paragraphs are separated by "<br><br>" runs into
+    // one <div class="llmtr-seg"> per paragraph. The wrappers stay inside their
+    // host so inherited styling (e.g. <font face/size>) still applies, and
+    // because they are <div>s the unchanged DIV-leaf path collects them next.
+    // Returns true when it produced 2+ paragraphs; flags `el` so it runs once.
+    function splitBrParagraphs(el) {
+        el.dataset.llmtrSplit = '1';
+        const host = brParagraphHost(el);
+        if (!host) return false;
+        const kids = Array.from(host.childNodes);
+        const runs = [];
+        let cur = [];
+        for (let i = 0; i < kids.length; i++) {
+            const n = kids[i];
+            if (!(n.nodeType === 1 && n.tagName === 'BR')) { cur.push(n); continue; }
+            // measure a run of <br>s, hopping over blank text nodes between them
+            let j = i + 1, brs = 1;
+            while (j < kids.length) {
+                const k = kids[j];
+                if (k.nodeType === 1 && k.tagName === 'BR') { brs++; j++; }
+                else if (k.nodeType === 3 && !/\S/.test(k.nodeValue)) j++;
+                else break;
+            }
+            if (brs >= 2) {                       // paragraph boundary
+                if (cur.length) { runs.push(cur); cur = []; }
+                i = j - 1;                        // consume the whole separator run
+            } else {
+                cur.push(n);                      // lone <br> stays in the paragraph
+            }
+        }
+        if (cur.length) runs.push(cur);
+
+        const textRuns = runs.filter(run => run.some(n =>
+            /\p{L}/u.test(n.nodeType === 3 ? n.nodeValue : (n.textContent || ''))));
+        if (textRuns.length < 2) return false;
+
+        for (const run of textRuns) {
+            const seg = document.createElement('div');
+            seg.className = 'llmtr-seg';
+            host.insertBefore(seg, run[0]);
+            for (const n of run) seg.appendChild(n);
+        }
+        // drop the now-orphaned separator <br>s / whitespace left between segs
+        for (const n of Array.from(host.childNodes)) {
+            if (n.nodeType === 1 && n.tagName === 'BR') host.removeChild(n);
+            else if (n.nodeType === 3 && !/\S/.test(n.nodeValue)) host.removeChild(n);
+        }
+        return true;
     }
 
     // ==========================================
@@ -765,6 +860,7 @@ html.llmtr-hide .llmtr { display: none; }
     }
 
     function maybeScheduleEager() {
+        if (CHAT) return; // chat hosts translate lazily via the settle gate, never bulk-prefetch
         if (!enabled || eagerScheduled || document.hidden) return;
         if (queue.length || inFlight > 0) return;
         if (prefetchedChars >= PREFETCH_MAX_CHARS) return;
@@ -779,11 +875,78 @@ html.llmtr-hide .llmtr { display: none; }
     }
 
     // ==========================================
+    // Chat-app support (ChatGPT / Claude / Gemini)
+    // These are streaming React SPAs: scope detection to assistant turns, and
+    // hold each block back until its text stops changing (so we never translate
+    // a half-written paragraph). A finished deep-research report settles on the
+    // first tick; the tail of a live answer settles ~SETTLE_MS after it stops.
+    // ==========================================
+    const CHAT_PROFILES = [
+        {
+            test: /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/,
+            roots: '[data-message-author-role="assistant"], .markdown.prose',
+            busy: () => !!document.querySelector('button[data-testid="stop-button"], button[aria-label*="Stop"i]'),
+        },
+        {
+            test: /(^|\.)claude\.ai$/,
+            roots: '.font-claude-message, [class*="artifact"] .prose',
+            busy: () => !!document.querySelector('button[aria-label*="Stop"i]'),
+        },
+        {
+            test: /(^|\.)gemini\.google\.com$/,
+            roots: 'message-content, .model-response-text, deep-research-immersive-panel',
+            busy: () => !!document.querySelector('button[aria-label*="Stop"i], .stop-icon'),
+        },
+    ];
+    const CHAT = CHAT_PROFILES.find(p => p.test.test(location.hostname)) || null;
+
+    const SETTLE_MS = 1200;
+    const settleWatch = new Map(); // el -> { len, ts }
+    let settleTimer = null;
+
+    function watchSettle(el) {
+        if (el.dataset.llmtrState || settleWatch.has(el)) return;
+        settleWatch.set(el, { len: (el.innerText || '').length, ts: Date.now() });
+        if (!settleTimer) settleTimer = setInterval(settleTick, 400);
+    }
+
+    function settleTick() {
+        const now = Date.now();
+        const busy = CHAT && CHAT.busy ? CHAT.busy() : false;
+        let any = false;
+        for (const [el, s] of settleWatch) {
+            if (!el.isConnected) { settleWatch.delete(el); continue; }
+            const len = (el.innerText || '').length;
+            if (len !== s.len) { s.len = len; s.ts = now; continue; } // still growing
+            // stable: translate once the model is idle, or after a quiet period
+            if (!busy || now - s.ts >= SETTLE_MS) {
+                settleWatch.delete(el);
+                enqueue(el);
+                any = true;
+            }
+        }
+        if (any) scheduleDispatch();
+        if (!settleWatch.size && settleTimer) { clearInterval(settleTimer); settleTimer = null; }
+    }
+
+    // Route a freshly-visible block: chat hosts wait for it to settle first.
+    function admit(el) {
+        if (CHAT) watchSettle(el);
+        else enqueue(el);
+    }
+
+    // ==========================================
     // Observers
     // ==========================================
     function scan() {
         const found = [];
-        collect(document.body, found);
+        // On chat hosts, scope to assistant turns — but if those selectors find
+        // nothing (the app renamed its classes, or no answer has rendered yet),
+        // fall back to the whole page so a selector change degrades to the
+        // generic behavior instead of a dead button.
+        const roots = CHAT ? document.querySelectorAll(CHAT.roots) : [];
+        const targets = roots.length ? roots : [document.body];
+        for (const root of targets) collect(root, found);
         for (const el of found) { allBlocks.push(el); io.observe(el); }
     }
 
@@ -794,7 +957,7 @@ html.llmtr-hide .llmtr { display: none; }
             for (const en of entries) {
                 if (!en.isIntersecting) continue;
                 io.unobserve(en.target);
-                enqueue(en.target);
+                admit(en.target);
                 any = true;
             }
             // skip the debounce when nothing is in flight — first visible
@@ -893,6 +1056,15 @@ html.llmtr-hide .llmtr { display: none; }
             chars += t.length;
             blocks++;
             if (chars > 600 && blocks >= 3) return true;
+        }
+        // Old-web fallback: a text container whose paragraphs are <br><br> runs
+        // with no semantic <p> (paulgraham.com, ...). Still requires real
+        // paragraph structure, so app UIs without prose stay button-free.
+        for (const c of document.querySelectorAll('font, td, div, blockquote')) {
+            const t = (c.textContent || '').trim();
+            if (t.length < 600 || looksLikeChinese(t)) continue;
+            if (c.querySelector(BLOCKY_SELECTOR)) continue; // only leaf text containers
+            if ((c.innerHTML.match(/(?:<br\s*\/?>\s*){2,}/gi) || []).length >= 2) return true;
         }
         return false;
     }
@@ -1297,7 +1469,7 @@ Rules:
         let attempts = 0;
         const tryShowFab = () => {
             if (fab) return;
-            if (pageLooksTranslatable()) { makeFab(); return; }
+            if (CHAT || pageLooksTranslatable()) { makeFab(); return; }
             if (++attempts < 10) setTimeout(tryShowFab, 1500);
         };
         tryShowFab();
