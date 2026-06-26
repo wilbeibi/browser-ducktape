@@ -19,6 +19,9 @@ Userscripts for patching up daily browsing annoyances.
 - **`inline_translate.js`** — Bilingual inline translation. Click the floating 译 button (or hit `Ctrl+T`) and every paragraph gets its Chinese translation right below the original. Also does text-selection translation (划词翻译) — select any text for an instant dictionary-style popup. Streaming, lazy loading, and local caching keep it fast. Works with any OpenAI-compatible API; right-click the button for settings.
   ![Inline Translate Demo](screenshots/translate-demo.svg)
 
+- **`hover_verdict.js`** — Preview links before opening them, so you can avoid unnecessary tab switches. Linger for a short summary when the preview is not enough.
+  ![Hover Verdict Demo](screenshots/hover-verdict-demo.svg)
+
 - **`prompt_rewrite.js`** — One-click prompt enhancer for Claude, ChatGPT, and Gemini. Hit ✨, get a sharper prompt. Undo if you don't like it. Works with any OpenAI-compatible API.
 
 - **`claude_usage_pace.js`** — Shows a progress bar of your Claude usage against your reset timer, so you know whether to pace yourself or go all-in.
