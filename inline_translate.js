@@ -33,6 +33,8 @@
     const CACHE_KEEP_ENTRIES = 1000;
     const PREFETCH_CHUNK_CHARS = 6000;  // idle prefetch: chars enqueued per idle period
     const PREFETCH_MAX_CHARS   = 30000; // idle prefetch: per-page cap, IO stays lazy beyond it
+    const MAX_RETRIES          = 2;     // auto-retry attempts before showing manual retry UI
+    const RETRY_BASE_DELAY_MS  = 2000;  // base delay before first retry (doubles each attempt)
 
     function getConfig() {
         return {
@@ -607,6 +609,23 @@ html.llmtr-hide .llmtr { display: none; }
         updateFab();
     }
 
+    function retryOrError(el) {
+        const retries = parseInt(el.dataset.llmtrRetries || '0', 10);
+        if (retries < MAX_RETRIES) {
+            el.dataset.llmtrRetries = String(retries + 1);
+            delete el.dataset.llmtrState;
+            const delay = RETRY_BASE_DELAY_MS * (retries + 1);
+            setTimeout(() => {
+                if (el.isConnected && enabled) {
+                    enqueue(el);
+                    scheduleDispatch();
+                }
+            }, delay);
+        } else {
+            setError(el);
+        }
+    }
+
     function setError(el) {
         const s = ensureSpan(el);
         s.classList.remove('llmtr-loading');
@@ -617,6 +636,7 @@ html.llmtr-hide .llmtr { display: none; }
         s.onclick = (e) => {
             e.preventDefault();
             e.stopPropagation();
+            delete el.dataset.llmtrRetries;
             enqueue(el);
             scheduleDispatch();
         };
@@ -768,7 +788,7 @@ html.llmtr-hide .llmtr { display: none; }
                 else setError(el);
             });
         } catch (err) {
-            batch.forEach(setError);
+            batch.forEach(el => retryOrError(el));
             showToast('翻译失败: ' + err.message, 'error');
         } finally {
             inFlight--;
