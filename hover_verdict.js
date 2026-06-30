@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Hover Link Verdict
 // @namespace    wilbeibi
-// @version      0.3.1
-// @description  Hover a link, get a fast "should I click this?" verdict. Instant URL layer -> head fetch -> gated LLM one-liner. No screenshots. LLM via any OpenAI-compatible endpoint (DeepSeek by default), configured the same way as the inline translator.
+// @version      0.4.2
+// @description  Hover a link, get a fast "should I click this?" verdict. Instant URL layer -> direct fetch -> Reader fallback -> gated LLM one-liner. No screenshots. LLM via any OpenAI-compatible endpoint (DeepSeek by default), configured the same way as the inline translator.
 // @author       wilbeibi
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -17,24 +17,287 @@
 // @noframes
 // ==/UserScript==
 
+// ---------------------------------------------------------------------------
+// The pure core (no GM_* / no DOM / no fetch) is extracted into `core`.
+// It is exercised by misc/test_hover_verdict.js. The browser glue below
+// wires core into a userscript; behavior lives in core so it can be tested.
+// ---------------------------------------------------------------------------
+
+const core = (() => {
+  'use strict';
+
+  const REDIRECTORS = new Set(['t.co','bit.ly','lnkd.in','buff.ly','ow.ly','goo.gl','tinyurl.com','dlvr.it']);
+  const PAYWALLS    = new Set(['nytimes.com','wsj.com','ft.com','bloomberg.com','economist.com','medium.com','theinformation.com']);
+
+  const V_TTL = 14 * 864e5; // 14 days
+  const V_CAP = 600;
+  const BODY_CAP  = 6000;
+  const READER_CAP = 4000;
+  const WEAK_DESC = 55;
+
+  const VERDICT_SYSTEM_PROMPT =
+    "Someone is deciding whether to click a link while reading something else. " +
+    "In ONE sentence (<=25 words), say concretely what this page is and what it covers — " +
+    "enough to decide. No filler, don't start with 'This page'. " +
+    "If it's thin/listicle/SEO-bait or paywalled, say so plainly.";
+
+  const SHELL_NEEDLES = [
+    'enable javascript',
+    'javascript is not available',
+    'unsupported browser',
+    "don’t miss what’s happening",
+    "don't miss what's happening",
+    'log in to continue',
+    'sign up to see',
+    'please turn javascript on',
+    'your request originates from an undeclared automated tool',
+    'please declare your traffic by updating your user agent',
+    'to allow for equitable access to all users',
+  ];
+
+  function compactText(s) {
+    return String(s || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function clipSentence(s, max=240) {
+    s = compactText(s);
+    if (s.length <= max) return s;
+    const cut = s.slice(0, max + 1);
+    return cut.slice(0, Math.max(cut.lastIndexOf('. '), cut.lastIndexOf(' '), max - 1)).trim() + '…';
+  }
+
+  function looksLikeShell(text) {
+    text = compactText(text).toLowerCase();
+    if (!text) return true;
+    return SHELL_NEEDLES.some(needle => text.includes(needle));
+  }
+
+  function instant(url) {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./,'');
+    const base = host.split('.').slice(-2).join('.');
+    const ext = (u.pathname.match(/\.(\w{2,4})$/)||[])[1]?.toLowerCase();
+    const typeTag = ext && /^(pdf|zip|dmg|exe|mp4|mp3|csv|docx?|xlsx?)$/.test(ext) ? ext.toUpperCase() : null;
+    return {
+      host, base,
+      favicon: `https://www.google.com/s2/favicons?domain=${host}&sz=32`,
+      redirect: REDIRECTORS.has(base),
+      wall: PAYWALLS.has(base),
+      typeTag,
+    };
+  }
+
+  function readerNeeded(s) {
+    return !s.desc || !s.text || s.text.length < 300 || looksLikeShell(s.text);
+  }
+
+  function verdictEligible(s) {
+    return !s.descAI && (!s.desc || s.desc.length < WEAK_DESC);
+  }
+
+  function verdictCacheable(v) {
+    if (!v) return false;
+    if (v.split(/\s+/).length < 6) return false;
+    if (/^(unable|cannot|empty|sorry|no )/i.test(v)) return false;
+    return true;
+  }
+
+  function cacheEntryStale(ts, now) {
+    return (now || Date.now()) - (ts || 0) > V_TTL;
+  }
+
+  function selectPruneKeys(entries, cap=V_CAP) {
+    if (entries.length <= cap) return [];
+    const keep = Math.floor(cap * 0.8);
+    return entries
+      .slice()
+      .sort((a, b) => (a.ts || 0) - (b.ts || 0))
+      .slice(0, entries.length - keep)
+      .map(e => e.key);
+  }
+
+  function buildVerdictPrompt(url, text) {
+    return {
+      model: null,
+      max_tokens: 70,
+      temperature: 0,
+      messages: [
+        { role: 'system', content: VERDICT_SYSTEM_PROMPT },
+        { role: 'user', content: `URL: ${url}\n\n${text}` },
+      ],
+    };
+  }
+
+  function parseHeadResponse(r, url) {
+    const ct = (r.responseHeaders.match(/content-type:\s*([^\r\n]+)/i) || [])[1] || '';
+    if (!/text\/html/i.test(ct)) throw new Error('not html');
+    const doc = new DOMParser().parseFromString(r.responseText, 'text/html');
+    const pick = s => doc.querySelector(s)?.getAttribute('content')?.trim() || null;
+    const finalUrl = r.finalUrl || url;
+    const abs = v => { try { return new URL(v, finalUrl).href } catch { return null } };
+    let desc = pick('meta[property="og:description"]') || pick('meta[name="twitter:description"]') || pick('meta[name="description"]');
+    if (desc && desc.length > 240) desc = clipSentence(desc);
+    const text = bodyTextFromDoc(doc);
+    if (!desc) desc = snippetFromDoc(doc);
+    const img = pick('meta[property="og:image"]') || pick('meta[name="twitter:image"]');
+    let finalHost;
+    try { finalHost = new URL(finalUrl).hostname.replace(/^www\./, ''); } catch { finalHost = null; }
+    return {
+      title: pick('meta[property="og:title"]') || doc.querySelector('title')?.textContent?.trim() || null,
+      desc, finalHost, finalUrl,
+      image: img ? abs(img) : null,
+      html: r.responseText,
+      text,
+    };
+  }
+
+  function parseReaderResponse(r, url) {
+    const d = JSON.parse(r.responseText);
+    if (r.status < 200 || r.status >= 300) {
+      throw new Error(d?.readableMessage || d?.message || ('HTTP ' + r.status));
+    }
+    const data = d.data || d;
+    const text = compactText(data.content || data.text || data.markdown || '').slice(0, READER_CAP);
+    if (!text || looksLikeShell(text)) throw new Error('empty reader');
+    let finalHost = null;
+    try { finalHost = new URL(data.url || url).hostname.replace(/^www\./, ''); } catch {}
+    return {
+      title: compactText(data.title) || null,
+      desc: clipSentence(data.description || text),
+      finalHost, finalUrl: data.url || url,
+      text,
+    };
+  }
+
+  function parseVerdictResponse(r) {
+    const d = JSON.parse(r.responseText);
+    if (r.status < 200 || r.status >= 300) {
+      throw new Error(d?.error?.message || ('HTTP ' + r.status));
+    }
+    return d.choices[0].message.content.trim();
+  }
+
+  // DOM helpers — accept a `doc` so tests can pass a jsdom Document.
+  function bodyTextFromDoc(doc, cap=BODY_CAP) {
+    doc.querySelectorAll('script,style,nav,footer,header,aside,noscript,svg').forEach(n => n.remove());
+    const root = doc.querySelector('article,main') || doc.body;
+    return compactText(root?.textContent || '').slice(0, cap);
+  }
+
+  function snippetFromDoc(doc) {
+    const pools = ['article p, main p, p', 'article li, main li, li'];
+    for (const sel of pools) {
+      for (const el of doc.querySelectorAll(sel)) {
+        const text = compactText(el.textContent);
+        if (text.length >= 80) return clipSentence(text);
+      }
+    }
+    return clipSentence(bodyTextFromDoc(doc));
+  }
+
+  function anchorText(a) {
+    return compactText(a?.textContent || a?.getAttribute?.('aria-label') || a?.getAttribute?.('title') || '');
+  }
+
+  function mergeRedirect(s, resolvedUrl) {
+    const ri = instant(resolvedUrl);
+    return Object.assign({}, s, {
+      favicon: ri.favicon,
+      wall: ri.wall,
+      typeTag: ri.typeTag,
+      redirect: false,
+    });
+  }
+
+  function normalizeHost(host) {
+    return String(host || '').trim().toLowerCase().replace(/^www\./, '');
+  }
+
+  function parseDisabledHosts(raw) {
+    try {
+      const hosts = JSON.parse(raw || '[]');
+      if (!Array.isArray(hosts)) return [];
+      return [...new Set(hosts.map(normalizeHost).filter(Boolean))].sort();
+    } catch {
+      return [];
+    }
+  }
+
+  function isHostDisabled(host, disabledHosts) {
+    return disabledHosts.includes(normalizeHost(host));
+  }
+
+  // ---- link scoping: article vs link-list pages --------------------------
+  // On article-like pages (stratechery, blogs, news), only fire on links inside
+  // the main content area — skip nav/footer/sidebar chrome. On link-list pages
+  // (HN, Reddit, search results, feed readers), the whole page IS links, so
+  // fire everywhere. The long-paragraph count distinguishes the two: real
+  // articles have several <p> blocks with real text; link lists don't.
+  const LONG_PARAGRAPH_CHARS = 80;
+  const MIN_LONG_PARAGRAPHS = 3;
+
+  const CONTENT_SELECTORS = 'article, main, [role="main"], .entry-content, .post-content, .post-body';
+  const CHROME_SELECTORS  = 'nav, header, footer, aside, [role="navigation"], [role="banner"], [role="contentinfo"]';
+
+  function countLongParagraphs(doc) {
+    let n = 0;
+    for (const el of doc.querySelectorAll('p, blockquote')) {
+      if ((el.textContent || '').trim().length >= LONG_PARAGRAPH_CHARS) n++;
+    }
+    return n;
+  }
+
+  function isArticlePage(doc) {
+    if (doc.querySelector('[role="application"], canvas:only-child')) return false;
+    return countLongParagraphs(doc) >= MIN_LONG_PARAGRAPHS;
+  }
+
+  function isLinkInContent(a) {
+    if (a.closest(CHROME_SELECTORS)) return false;
+    if (a.closest(CONTENT_SELECTORS)) return true;
+    return false;
+  }
+
+  return {
+    REDIRECTORS, PAYWALLS,
+    V_TTL, V_CAP, BODY_CAP, READER_CAP, WEAK_DESC,
+    VERDICT_SYSTEM_PROMPT, SHELL_NEEDLES,
+    LONG_PARAGRAPH_CHARS, MIN_LONG_PARAGRAPHS,
+    CONTENT_SELECTORS, CHROME_SELECTORS,
+    compactText, clipSentence, looksLikeShell,
+    instant, readerNeeded, verdictEligible, verdictCacheable,
+    cacheEntryStale, selectPruneKeys,
+    buildVerdictPrompt,
+    parseHeadResponse, parseReaderResponse, parseVerdictResponse,
+    bodyTextFromDoc, snippetFromDoc, anchorText,
+    mergeRedirect,
+    normalizeHost, parseDisabledHosts, isHostDisabled,
+    countLongParagraphs, isArticlePage, isLinkInContent,
+  };
+})();
+
+// ---------------------------------------------------------------------------
+// Browser glue. Only this section touches GM_* / DOM / timers / listeners.
+// ---------------------------------------------------------------------------
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = core;
+  return;
+}
+
 (() => {
   'use strict';
 
-  // ---- config ------------------------------------------------------------
-  const T_FETCH   = 300;   // ms dwell before kicking the head fetch
-  const T_SHOW    = 600;   // ms dwell before revealing the card
-  const T_VERDICT = 1500;  // ms dwell before summarizing weak/missing metadata
-  const T_DEEPER  = 2400;  // ms dwell before replacing decent metadata with a summary
-  const T_HIDE    = 180;   // grace period on leave
-  const WEAK_DESC = 55;    // descriptions shorter than this are "weak" -> verdict eligible
-  const BODY_CAP  = 6000;  // chars of body text sent to the model
+  const T_FETCH   = 300;
+  const T_SHOW    = 600;
+  const T_VERDICT = 1500;
+  const T_DEEPER  = 2400;
+  const T_HIDE    = 180;
 
-  // LLM endpoint. Same model/keys mechanism as the inline translator: the URL
-  // is the full OpenAI-compatible /chat/completions endpoint, the key is a
-  // bearer token. Configure via the Tampermonkey menu (or point API_URL at
-  // your `toll` proxy). With no key set, Tiers 0+1 still work; Tier 2 is off.
   const DEFAULT_URL   = 'https://api.deepseek.com/v1/chat/completions';
-  const DEFAULT_MODEL = 'deepseek-chat';   // DeepSeek's fast non-reasoning model
+  const DEFAULT_MODEL = 'deepseek-chat';
+  const READER_URL    = 'https://r.jina.ai/';
+  const DISABLED_HOSTS_KEY = 'DISABLED_HOSTS';
 
   function getConfig() {
     return {
@@ -44,45 +307,68 @@
     };
   }
   function llmEnabled() { return !!getConfig().key; }
+  function getReaderKey() { return String(GM_getValue('JINA_API_KEY', '') || '').trim(); }
 
-  const REDIRECTORS = new Set(['t.co','bit.ly','lnkd.in','buff.ly','ow.ly','goo.gl','tinyurl.com','dlvr.it']);
-  const PAYWALLS    = new Set(['nytimes.com','wsj.com','ft.com','bloomberg.com','economist.com','medium.com','theinformation.com']);
-
-  const mem = new Map(); // url -> {tier1?, verdict?}
-
-  // ---- persistent verdict cache (GM storage, TTL + capped) ---------------
-  const V_TTL = 14 * 864e5; // 14 days
-  const V_CAP = 600;        // max persisted verdicts before pruning
+  const mem = new Map();
 
   function vGet(url) {
     try {
       const raw = GM_getValue('v:' + url, null);
       if (!raw) return null;
       const o = JSON.parse(raw);
-      if (Date.now() - (o.ts || 0) > V_TTL) { GM_deleteValue('v:' + url); return null; }
+      if (core.cacheEntryStale(o.ts)) { GM_deleteValue('v:' + url); return null; }
       return o.v || null;
     } catch (e) { return null; }
   }
   function vPut(url, v) {
+    if (!core.verdictCacheable(v)) return;
     try { GM_setValue('v:' + url, JSON.stringify({ v, ts: Date.now() })); } catch (e) {}
     if (Math.random() < 0.05) vPrune();
   }
   function vPrune() {
     try {
       const keys = GM_listValues().filter(k => k.startsWith('v:'));
-      if (keys.length <= V_CAP) return;
-      const items = keys.map(k => {
+      if (keys.length <= core.V_CAP) return;
+      const entries = keys.map(k => {
         let ts = 0;
         try { ts = JSON.parse(GM_getValue(k, '{}')).ts || 0; } catch (e) {}
-        return [k, ts];
-      }).sort((a, b) => a[1] - b[1]);
-      const keep = Math.floor(V_CAP * 0.8);
-      for (let i = 0; i < items.length - keep; i++) GM_deleteValue(items[i][0]);
+        return { key: k, ts };
+      });
+      for (const k of core.selectPruneKeys(entries)) GM_deleteValue(k);
     } catch (e) {}
   }
 
-  // ---- styles ------------------------------------------------------------
-  GM_addStyle(`
+  function disabledHosts() {
+    return core.parseDisabledHosts(GM_getValue(DISABLED_HOSTS_KEY, '[]'));
+  }
+
+  function putDisabledHosts(hosts) {
+    GM_setValue(DISABLED_HOSTS_KEY, JSON.stringify(core.parseDisabledHosts(JSON.stringify(hosts))));
+  }
+
+  const siteHost = core.normalizeHost(location.hostname);
+
+  function setSiteDisabled(disabled) {
+    const hosts = disabledHosts().filter(h => h !== siteHost);
+    if (disabled) hosts.push(siteHost);
+    putDisabledHosts(hosts);
+    location.reload();
+  }
+
+  function registerSiteToggle(disabled) {
+    if (typeof GM_registerMenuCommand !== 'function' || !siteHost) return;
+    GM_registerMenuCommand(
+      disabled ? `Hover Verdict — Enable on ${siteHost}` : `Hover Verdict — Disable on ${siteHost}`,
+      () => setSiteDisabled(!disabled)
+    );
+  }
+
+  const disabledHere = core.isHostDisabled(siteHost, disabledHosts());
+  registerSiteToggle(disabledHere);
+  if (disabledHere) return;
+
+  const STYLE_ID = 'hlv-style';
+  const HLV_CSS = `
     #hlv { --hlv-bg:#23262b; --hlv-fg:#e9edf2; --hlv-title:#fff; --hlv-muted:#a4adb8;
       --hlv-desc:#c7cdd6; --hlv-ai:#d5deec; --hlv-ai-label:#93a4c4; --hlv-border:#3a4049;
       --hlv-shadow:0 10px 22px rgba(0,0,0,.36); --hlv-tag-bg:#303640; --hlv-tag-fg:#c5ccd6;
@@ -134,10 +420,36 @@
       #hlv { transition:opacity .01s; transform:none; }
       #hlv .row { transition:none; }
     }
-  `);
+  `;
 
   const card = document.createElement('div'); card.id = 'hlv';
-  document.documentElement.appendChild(card);
+  let styleNode = null;
+
+  function markStyle(style) {
+    if (!style || style.nodeType !== 1) return null;
+    style.id = STYLE_ID;
+    return style;
+  }
+
+  function ensureStyle() {
+    if (styleNode?.isConnected) return;
+    const existing = document.getElementById(STYLE_ID);
+    if (existing) { styleNode = existing; return; }
+    styleNode = markStyle(typeof GM_addStyle === 'function' ? GM_addStyle(HLV_CSS) : null);
+    if (styleNode) return;
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = HLV_CSS;
+    (document.head || document.documentElement).appendChild(style);
+    styleNode = style;
+  }
+
+  function ensureCard() {
+    ensureStyle();
+    if (!card.isConnected) (document.body || document.documentElement).appendChild(card);
+  }
+
+  ensureCard();
 
   let tFetch=null, tShow=null, tVerdict=null, tDeep=null, tHide=null, active=null, paintSeq=0;
 
@@ -165,24 +477,8 @@
     return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'hlv-light' : 'hlv-dark';
   }
 
-  // ---- tier 0: instant, from the URL alone --------------------------------
-  function instant(url) {
-    const u = new URL(url);
-    const host = u.hostname.replace(/^www\./,'');
-    const base = host.split('.').slice(-2).join('.');
-    const ext = (u.pathname.match(/\.(\w{2,4})$/)||[])[1]?.toLowerCase();
-    const typeTag = ext && /^(pdf|zip|dmg|exe|mp4|mp3|csv|docx?|xlsx?)$/.test(ext) ? ext.toUpperCase() : null;
-    return {
-      host, base,
-      favicon: `https://www.google.com/s2/favicons?domain=${host}&sz=32`,
-      redirect: REDIRECTORS.has(base),
-      wall: PAYWALLS.has(base),
-      typeTag,
-    };
-  }
-
-  // ---- render ------------------------------------------------------------
   function paint(s) {
+    ensureCard();
     card.innerHTML = '';
     const row = document.createElement('div'); row.className='row';
     const fav = document.createElement('img'); fav.className='ico'; fav.src=s.favicon; fav.onerror=()=>fav.remove();
@@ -208,6 +504,7 @@
   }
 
   function place(x,y){
+    ensureCard();
     const r=card.getBoundingClientRect(), p=14;
     let l=x+p, t=y+p;
     if (l+r.width>innerWidth) l=x-r.width-p;
@@ -226,117 +523,123 @@
     }, 90);
   }
 
-  // ---- tier 1: head fetch -------------------------------------------------
   function headFetch(url){
     return new Promise((res,rej)=>{
       GM_xmlhttpRequest({
         method:'GET', url, timeout:7000,
-        headers:{ 'Accept':'text/html', 'Range':'bytes=0-65535' },  // head usually lives here
-        onload:r=>{
-          const ct=(r.responseHeaders.match(/content-type:\s*([^\r\n]+)/i)||[])[1]||'';
-          if(!/text\/html/i.test(ct)) return rej(new Error('not html'));
-          const doc=new DOMParser().parseFromString(r.responseText,'text/html');
-          const pick=s=>doc.querySelector(s)?.getAttribute('content')?.trim()||null;
-          const finalUrl=r.finalUrl||url;
-          const abs=v=>{ try{return new URL(v,finalUrl).href}catch{return null} };
-          let desc = pick('meta[property="og:description"]')||pick('meta[name="twitter:description"]')||pick('meta[name="description"]');
-          if(desc&&desc.length>240) desc=desc.slice(0,240)+'…';
-          const img = pick('meta[property="og:image"]')||pick('meta[name="twitter:image"]');
-          let finalHost;
-          try { finalHost = new URL(finalUrl).hostname.replace(/^www\./,''); } catch { finalHost = null; }
-          res({
-            title: pick('meta[property="og:title"]')||doc.querySelector('title')?.textContent?.trim()||null,
-            desc, finalHost,
-            image: img?abs(img):null,
-            html: r.responseText,
-          });
-        },
+        headers:{ 'Accept':'text/html', 'Range':'bytes=0-65535' },
+        onload:r=>{ try { res(core.parseHeadResponse(r, url)); } catch (e) { rej(e); } },
         onerror:()=>rej(new Error('network')), ontimeout:()=>rej(new Error('timeout')),
       });
     });
   }
 
-  // ---- tier 2: gated verdict ---------------------------------------------
-  function bodyText(html){
-    const doc=new DOMParser().parseFromString(html,'text/html');
-    doc.querySelectorAll('script,style,nav,footer,header,aside').forEach(n=>n.remove());
-    const root=doc.querySelector('article,main')||doc.body;
-    return (root?.textContent||'').replace(/\s+/g,' ').trim().slice(0,BODY_CAP);
+  function readerFetch(url) {
+    return new Promise((res,rej)=>{
+      const headers = {
+        'Accept':'application/json',
+        'Content-Type':'application/x-www-form-urlencoded',
+        'x-respond-timing':'visible-content',
+        'x-max-tokens':'900',
+      };
+      const key = getReaderKey();
+      if (key) headers.Authorization = 'Bearer ' + key;
+      GM_xmlhttpRequest({
+        method:'POST', url:READER_URL, timeout:12000,
+        headers, data:'url=' + encodeURIComponent(url),
+        onload:r=>{ try { res(core.parseReaderResponse(r, url)); } catch (e) { rej(e); } },
+        onerror:()=>rej(new Error('reader network')), ontimeout:()=>rej(new Error('reader timeout')),
+      });
+    });
   }
 
-  function verdict(url, html){
+  function verdict(url, text){
     const cfg=getConfig();
-    const text=bodyText(html);
     if(!text || !cfg.key) return Promise.reject(new Error('no body / no key'));
+    const body = core.buildVerdictPrompt(url, text);
+    body.model = cfg.model;
     return new Promise((res,rej)=>{
       GM_xmlhttpRequest({
         method:'POST', url:cfg.url, timeout:9000,
         headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+cfg.key },
-        data: JSON.stringify({
-          model: cfg.model, max_tokens: 70, temperature: 0,
-          messages:[
-            {role:'system', content:"Someone is deciding whether to click a link while reading something else. In ONE sentence (<=25 words), say concretely what this page is and what it covers — enough to decide. No filler, don't start with 'This page'. If it's thin/listicle/SEO-bait or paywalled, say so plainly."},
-            {role:'user', content:`URL: ${url}\n\n${text}`},
-          ],
-        }),
-        onload:r=>{
-          try{
-            const d=JSON.parse(r.responseText);
-            if(r.status<200||r.status>=300) return rej(new Error(d?.error?.message||('HTTP '+r.status)));
-            res(d.choices[0].message.content.trim());
-          }catch(e){ rej(new Error('bad response')); }
-        },
+        data: JSON.stringify(body),
+        onload:r=>{ try { res(core.parseVerdictResponse(r)); } catch (e) { rej(e); } },
         onerror:()=>rej(new Error('network')), ontimeout:()=>rej(new Error('timeout')),
       });
     });
   }
 
-  // ---- orchestration ------------------------------------------------------
   async function run(a, x, y, hoverAt){
     let url=a.href; active=url;
     let s;
-    try { s=instant(url); } catch { return; }
+    try { s=core.instant(url); } catch { return; }
+    const fallbackText = core.anchorText(a);
     const theme = linkTheme(a);
     card.classList.toggle('hlv-light', theme === 'hlv-light');
     card.classList.toggle('hlv-dark', theme === 'hlv-dark');
     const cached=mem.get(url)||{};
     Object.assign(s, cached.tier1||{});
+    Object.assign(s, cached.reader||{});
     if(cached.verdict){ s.desc=cached.verdict; s.descAI=true; }
     const schedule = (ms, fn) => setTimeout(fn, Math.max(0, ms - (Date.now() - hoverAt)));
 
-    // paint instant layer immediately, then enrich in place — no spinner
     tShow=schedule(T_SHOW, ()=>{ if(active===url){ paint(s); place(x,y); card.classList.add('on'); } });
 
-    if(!cached.tier1 && !s.redirect){
+    let fetchUrl = url;
+    if(!cached.tier1){
       try{
-        const t1=await headFetch(url);
+        const t1=await headFetch(fetchUrl);
         if(active!==url) return;
+        if(t1.finalUrl && t1.finalUrl !== fetchUrl){
+          fetchUrl = t1.finalUrl;
+          s = core.mergeRedirect(s, fetchUrl);
+        }
         Object.assign(s, t1);
         mem.set(url,{...mem.get(url),tier1:t1});
         repaint(s, x, y);
       }catch{ /* blocked / non-html / timeout: keep tier 0 */ }
     }
 
-    // tier 2: summarize on deliberate dwell; strong metadata waits longer.
-    const weak = !s.descAI && (!s.desc || s.desc.length < WEAK_DESC);
-    if(weak && llmEnabled() && s.html && !mem.get(url)?.verdict){
+    if(!cached.reader && core.readerNeeded(s)){
+      try{
+        const r1=await readerFetch(fetchUrl);
+        if(active!==url) return;
+        if(r1.finalUrl && r1.finalUrl !== fetchUrl){
+          fetchUrl = r1.finalUrl;
+          s = core.mergeRedirect(s, fetchUrl);
+        }
+        Object.assign(s, r1);
+        mem.set(url,{...mem.get(url),reader:r1});
+        repaint(s, x, y);
+      }catch{ /* Reader is opportunistic: keep the direct/instant result. */ }
+    }
+
+    if(fallbackText && (!s.desc || core.looksLikeShell([s.title, s.desc, s.text].filter(Boolean).join(' ')))){
+      s.desc = fallbackText;
+      s.text = s.text && !core.looksLikeShell(s.text) ? s.text : fallbackText;
+      repaint(s, x, y);
+    }
+
+    const weak = core.verdictEligible(s);
+    const verdictSource = s.text;
+    if(weak && llmEnabled() && verdictSource && !mem.get(url)?.verdict){
       tVerdict=schedule(T_VERDICT, async()=>{
         if(active!==url) return;
         const oldDesc = s.desc;
         if(!oldDesc){ s.desc='reading…'; s.descAI=true; repaint(s, x, y); }
         try{
-          const v=await verdict(url, s.html);
+          const v=await verdict(fetchUrl, verdictSource);
           mem.set(url,{...mem.get(url),verdict:v});
           vPut(url, v);
           if(active===url){ s.desc=v; s.descAI=true; repaint(s, x, y); }
         }catch{ if(active===url && !oldDesc){ s.desc=null; s.descAI=false; repaint(s, x, y); } }
       });
-    } else if(!s.descAI && s.desc && llmEnabled() && s.html && !mem.get(url)?.verdict){
+    } else if(!s.descAI && s.desc && llmEnabled() && verdictSource && !mem.get(url)?.verdict){
       tDeep=schedule(T_DEEPER, async()=>{
         if(active!==url) return;
         const oldDesc = s.desc;
         try{
-          const v=await verdict(url, s.html);
+          const v=await verdict(fetchUrl, verdictSource);
           mem.set(url,{...mem.get(url),verdict:v});
           vPut(url, v);
           if(active===url){ s.desc=v; s.descAI=true; repaint(s, x, y); }
@@ -347,18 +650,21 @@
 
   function hide(){ card.classList.remove('on','updating'); active=null; paintSeq++; [tFetch,tShow,tVerdict,tDeep].forEach(clearTimeout); }
 
+  let articlePage = core.isArticlePage(document);
+
   function eligible(a){
     if(!a||a.tagName!=='A'||!a.href||!/^https?:/.test(a.href)) return false;
     if(a.href===location.href) return false;
     if(a.closest('.hlv-overlay')) return false;
+    if(articlePage && !core.isLinkInContent(a)) return false;
     return true;
   }
 
   document.addEventListener('mouseover', e=>{
-    const a=e.target.closest('a'); if(!eligible(a)) return;
+    const a=e.target?.closest?.('a'); if(!eligible(a)) return;
+    ensureCard();
     clearTimeout(tHide); [tFetch,tShow,tVerdict,tDeep].forEach(clearTimeout);
     const {clientX:x, clientY:y}=e;
-    // warm persisted verdict cache
     const pv=vGet(a.href);
     if(pv){ const c=mem.get(a.href)||{}; c.verdict=pv; mem.set(a.href,c); }
     const hoverAt=Date.now();
@@ -366,7 +672,7 @@
   });
 
   document.addEventListener('mouseout', e=>{
-    const a=e.target.closest('a');
+    const a=e.target?.closest?.('a');
     if(!a) return;
     if(e.relatedTarget && a.contains(e.relatedTarget)) return;
     clearTimeout(tFetch);
@@ -374,7 +680,6 @@
   });
   document.addEventListener('scroll', hide, {passive:true});
 
-  // ---- settings ----------------------------------------------------------
   function showSettings(){
     if(document.querySelector('.hlv-overlay')) return;
     const overlay=document.createElement('div'); overlay.className='hlv-overlay';
@@ -387,9 +692,10 @@
       const input=document.createElement('input'); input.type=type; input.placeholder=placeholder; modal.appendChild(input);
       return input;
     }
-    const keyInput   = field('API Key (leave blank to disable the LLM verdict)', 'password', 'sk-...');
+    const keyInput   = field('LLM API Key (leave blank to disable the LLM verdict)', 'password', 'sk-...');
     const urlInput   = field('API URL', 'text', DEFAULT_URL);
     const modelInput = field('Model', 'text', DEFAULT_MODEL);
+    const readerKeyInput = field('Jina Reader API Key (optional)', 'password', 'jina_...');
 
     const status=document.createElement('div'); status.className='hlv-status'; modal.appendChild(status);
 
@@ -402,12 +708,14 @@
     keyInput.value   = GM_getValue('API_KEY', '');
     urlInput.value   = GM_getValue('API_URL', '');
     modelInput.value = GM_getValue('MODEL', '');
+    readerKeyInput.value = GM_getValue('JINA_API_KEY', '');
     keyInput.focus();
 
     const vals=()=>({
       key:   keyInput.value.trim(),
       url:   urlInput.value.trim() || DEFAULT_URL,
       model: modelInput.value.trim() || DEFAULT_MODEL,
+      readerKey: readerKeyInput.value.trim(),
     });
 
     cancelBtn.onclick=()=>overlay.remove();
@@ -438,6 +746,7 @@
       GM_setValue('API_KEY', v.key);
       GM_setValue('API_URL', v.url);
       GM_setValue('MODEL', v.model);
+      GM_setValue('JINA_API_KEY', v.readerKey);
       overlay.remove();
     };
 

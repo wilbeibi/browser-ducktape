@@ -4,3 +4,7 @@
 .codex/
 .omo/
 .playwright-mcp/
+misc/*
+!misc/package.json
+!misc/package-lock.json
+!misc/test_hover_verdict.js

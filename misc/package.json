@@ -1,0 +1,11 @@
+{
+  "name": "browser-ducktape-misc",
+  "private": true,
+  "description": "Tests for userscript core modules. Not published.",
+  "scripts": {
+    "test": "node --test test_hover_verdict.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.3"
+  }
+}
