@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Gemini - Dynamic Tab Title
 // @namespace    http://tampermonkey.net/
-// @version      1.0.2
+// @version      1.0.3
 // @description  Updates the tab title to the active conversation title
 // @match        *://gemini.google.com/*
 // @grant        none
 // @run-at       document-start
-// @inject-into  page
+// @inject-into  content
 // ==/UserScript==
 
 (function () {
@@ -15,7 +15,6 @@
   const CHAT_PAGE_REGEX = /^\/app\/[\w-]+$/;
   const ORIGINAL_TITLE = document.title || 'Google Gemini';
 
-  let timer = null;
   let lastTitle = '';
   let lastPath = '';
 
@@ -49,34 +48,14 @@
       lastTitle = title;
       const newTitle = `${title} - ${ORIGINAL_TITLE}`;
       if (!document.title.includes(title)) document.title = newTitle;
-      stopPolling();
     }
   }
 
-  function stopPolling() {
-    if (timer) clearInterval(timer);
-    timer = null;
-  }
-
-  function startPolling() {
-    if (timer) clearInterval(timer);
-    timer = setInterval(applyTitle, 500);
-    applyTitle();
-  }
-
-  const pushState = history.pushState;
-  history.pushState = function (...args) {
-    const ret = pushState.apply(this, args);
-    startPolling();
-    return ret;
-  };
-  const replaceState = history.replaceState;
-  history.replaceState = function (...args) {
-    const ret = replaceState.apply(this, args);
-    startPolling();
-    return ret;
-  };
-  window.addEventListener('popstate', startPolling);
-
-  startPolling();
+  // Poll instead of hooking history.pushState. Hooking would require
+  // @inject-into page, which Google's CSP blocks on Firefox (and hooking the
+  // page's history from the content context throws "Permission denied").
+  // Polling from the content context works cross-browser; applyTitle
+  // early-returns cheaply once the title is set and recomputes on navigation.
+  setInterval(applyTitle, 500);
+  applyTitle();
 })();
