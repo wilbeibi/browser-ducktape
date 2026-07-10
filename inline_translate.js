@@ -1484,13 +1484,15 @@ Rules:
 
         initSelectionTranslate();
 
-        // Show the floating button once the page looks like an article;
-        // retry a few times for late-rendering SPAs.
+        // Show the floating button once the page looks like an article.
+        // Keep watching for ~2 minutes with a decaying cadence: slow SPAs and
+        // late-loading readers used to fall outside the old 15s window, leaving
+        // the feature looking broken (Ctrl+T worked, but nothing showed it).
         let attempts = 0;
         const tryShowFab = () => {
             if (fab) return;
             if (CHAT || pageLooksTranslatable()) { makeFab(); return; }
-            if (++attempts < 10) setTimeout(tryShowFab, 1500);
+            if (++attempts < 40) setTimeout(tryShowFab, attempts < 10 ? 1500 : 4000);
         };
         tryShowFab();
     }

@@ -650,13 +650,21 @@ if (typeof module !== 'undefined' && module.exports) {
 
   function hide(){ card.classList.remove('on','updating'); active=null; paintSeq++; [tFetch,tShow,tVerdict,tDeep].forEach(clearTimeout); }
 
-  let articlePage = core.isArticlePage(document);
+  // Re-evaluated per URL so SPA navigation (blog -> index -> post) doesn't
+  // freeze the article-vs-linklist scoping at whatever the first page was.
+  let articleCheck = { href: '', val: false };
+  function articlePage(){
+    if(articleCheck.href !== location.href){
+      articleCheck = { href: location.href, val: core.isArticlePage(document) };
+    }
+    return articleCheck.val;
+  }
 
   function eligible(a){
     if(!a||a.tagName!=='A'||!a.href||!/^https?:/.test(a.href)) return false;
     if(a.href===location.href) return false;
     if(a.closest('.hlv-overlay')) return false;
-    if(articlePage && !core.isLinkInContent(a)) return false;
+    if(articlePage() && !core.isLinkInContent(a)) return false;
     return true;
   }
 

@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         GitHub to DeepWiki Link
 // @namespace    http://tampermonkey.net/
-// @version      0.1
+// @version      0.2
 // @description  Adds a button to GitHub repository pages that links to the corresponding DeepWiki page
 // @author       You
 // @match        https://github.com/*/*
 // @grant        none
+// @inject-into  content
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -72,7 +73,12 @@
 
         // If it has more parts, check if it's a known non-repo section
         if (pathParts.length > 2) {
-            const nonRepoSections = ['issues', 'pull', 'actions', 'projects', 'wiki', 'security', 'pulse', 'settings'];
+            const nonRepoSections = [
+                'issues', 'pull', 'pulls', 'actions', 'projects', 'wiki', 'security',
+                'pulse', 'settings', 'discussions', 'releases', 'tags', 'packages',
+                'deployments', 'graphs', 'network', 'labels', 'milestones',
+                'compare', 'forks', 'stargazers', 'watchers', 'sponsors'
+            ];
             if (nonRepoSections.includes(pathParts[2])) return false;
 
             // Could be a file path within the repo, which is still a repo page

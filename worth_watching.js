@@ -11,6 +11,7 @@
 // @match        https://bilibili.com/video/*
 // @match        https://m.bilibili.com/video/*
 // @grant        window.close
+// @grant        GM_registerMenuCommand
 // @run-at       document-start
 // ==/UserScript==
 
@@ -341,6 +342,43 @@
                 from { transform: translateY(-20px); opacity: 0; }
                 to   { transform: translateY(0);     opacity: 1; }
             }
+            .vc-list {
+                margin: 0 0 16px;
+                padding: 0;
+                list-style: none;
+                max-height: 45vh;
+                overflow-y: auto;
+            }
+            .vc-list li {
+                display: flex;
+                align-items: baseline;
+                gap: 8px;
+                padding: 8px 0;
+                border-bottom: 1px solid #e5e7eb;
+            }
+            .vc-list .vc-item-main { flex: 1; min-width: 0; }
+            .vc-list a {
+                color: #1d4ed8;
+                font-size: 14px;
+                font-weight: 600;
+                text-decoration: none;
+                overflow-wrap: anywhere;
+            }
+            .vc-list a:hover { text-decoration: underline; }
+            .vc-why {
+                margin: 2px 0 0;
+                color: #6b7280;
+                font-size: 12px;
+            }
+            .vc-remove {
+                border: none;
+                background: none;
+                color: #9ca3af;
+                font-size: 14px;
+                cursor: pointer;
+                padding: 2px 6px;
+            }
+            .vc-remove:hover { color: #b91c1c; }
             @media (max-width: 480px) {
                 .vc-dialog {
                     padding: 22px;
@@ -634,6 +672,93 @@
         overlay.appendChild(dialog);
 
         mountOverlay(overlay);
+    }
+
+    // --- Watch-later list viewer ---
+    // The counterpart of "Save for tonight": browse, open, or drop saved
+    // videos. Reachable from the userscript menu on YouTube/Bilibili pages.
+
+    function showWatchLater() {
+        cleanup();
+        injectStyle();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'video-confirm-overlay';
+        const dialog = document.createElement('div');
+        dialog.className = 'vc-dialog';
+
+        const kicker = document.createElement('p');
+        kicker.className = 'vc-kicker';
+        kicker.textContent = 'Saved for later';
+        dialog.appendChild(kicker);
+
+        const entries = readJSON(localStorage, WATCH_LATER_KEY, []);
+        const question = document.createElement('h2');
+        question.className = 'vc-question';
+        question.textContent = entries.length
+            ? `${entries.length} video${entries.length > 1 ? 's' : ''} waiting`
+            : 'Nothing saved';
+        dialog.appendChild(question);
+
+        if (entries.length) {
+            const list = document.createElement('ul');
+            list.className = 'vc-list';
+            entries.slice().reverse().forEach((entry) => {
+                const li = document.createElement('li');
+                const main = document.createElement('div');
+                main.className = 'vc-item-main';
+                const link = document.createElement('a');
+                link.href = entry.url;
+                link.textContent = entry.title || entry.url;
+                main.appendChild(link);
+                if (entry.intention) {
+                    const why = document.createElement('p');
+                    why.className = 'vc-why';
+                    why.textContent = '“' + entry.intention + '” · ' + new Date(entry.t).toLocaleDateString();
+                    main.appendChild(why);
+                }
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'vc-remove';
+                remove.textContent = '✕';
+                remove.title = 'Remove from list';
+                remove.onclick = () => {
+                    const rest = readJSON(localStorage, WATCH_LATER_KEY, []).filter(e => e.url !== entry.url);
+                    writeJSON(localStorage, WATCH_LATER_KEY, rest);
+                    li.remove();
+                    question.textContent = rest.length
+                        ? `${rest.length} video${rest.length > 1 ? 's' : ''} waiting`
+                        : 'Nothing saved';
+                };
+                li.appendChild(main);
+                li.appendChild(remove);
+                list.appendChild(li);
+            });
+            dialog.appendChild(list);
+        } else {
+            const helper = document.createElement('p');
+            helper.className = 'vc-helper';
+            helper.textContent = '“Save for tonight” during work hours puts videos here.';
+            dialog.appendChild(helper);
+        }
+
+        const actions = document.createElement('div');
+        actions.className = 'vc-actions';
+        const closeButton = document.createElement('button');
+        closeButton.type = 'button';
+        closeButton.className = 'vc-button vc-continue';
+        closeButton.textContent = 'Close';
+        closeButton.onclick = cleanup;
+        actions.appendChild(closeButton);
+        dialog.appendChild(actions);
+
+        overlay.appendChild(dialog);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(); });
+        mountOverlay(overlay);
+    }
+
+    if (typeof GM_registerMenuCommand === 'function') {
+        GM_registerMenuCommand('Watch-later list', showWatchLater);
     }
 
     // --- Entry points ---

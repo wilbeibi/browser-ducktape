@@ -8,3 +8,4 @@ misc/*
 !misc/package.json
 !misc/package-lock.json
 !misc/test_hover_verdict.js
+!misc/test_adhd_reader.js

@@ -247,7 +247,9 @@ Return ONLY the enhanced prompt, nothing else.`;
     // ==========================================
     let initialized = false;
     let activeTextarea = null;
-    let undoStack = []; // { el, text } — last original text before enhance
+    // Text snapshot, not a DOM reference: chat SPAs re-render the composer,
+    // and an element-keyed undo dies with the old node.
+    let lastOriginal = null;
 
     // ==========================================
     // Textarea detection (kept from v3, it works)
@@ -511,15 +513,19 @@ Return ONLY the enhanced prompt, nothing else.`;
     // ==========================================
     // Core: enhance or undo
     // ==========================================
+    function setBtnState(btn) {
+        const undo = lastOriginal !== null;
+        btn.classList.toggle('has-undo', undo);
+        btn.textContent = undo ? '↩' : '✨';
+        btn.title = undo ? 'Undo — restore original prompt' : 'Enhance prompt (Ctrl+Shift+E)';
+    }
+
     async function handleClick(textarea, btn) {
         // If we have undo available, undo instead
-        const lastUndo = undoStack.find(u => u.el === textarea);
-        if (lastUndo && btn.classList.contains('has-undo')) {
-            setText(textarea, lastUndo.text);
-            undoStack = undoStack.filter(u => u.el !== textarea);
-            btn.classList.remove('has-undo');
-            btn.textContent = '✨';
-            btn.title = 'Enhance prompt (Ctrl+Shift+E)';
+        if (lastOriginal !== null && btn.classList.contains('has-undo')) {
+            setText(textarea, lastOriginal);
+            lastOriginal = null;
+            setBtnState(btn);
             return;
         }
 
@@ -533,28 +539,18 @@ Return ONLY the enhanced prompt, nothing else.`;
             return;
         }
 
-        // Save for undo
-        undoStack = undoStack.filter(u => u.el !== textarea);
-        undoStack.push({ el: textarea, text });
-
         btn.classList.add('loading');
         btn.textContent = '⏳';
 
         try {
             const result = await callAPI(text);
             setText(textarea, result);
-            btn.classList.add('has-undo');
-            btn.textContent = '↩';
-            btn.title = 'Undo — restore original prompt';
+            lastOriginal = text;
         } catch (err) {
-            // Remove failed undo entry
-            undoStack = undoStack.filter(u => u.el !== textarea);
             showToast('Error: ' + err.message, 'error');
         } finally {
             btn.classList.remove('loading');
-            if (!btn.classList.contains('has-undo')) {
-                btn.textContent = '✨';
-            }
+            setBtnState(btn);
         }
     }
 
@@ -755,6 +751,7 @@ Return ONLY the enhanced prompt, nothing else.`;
             e.stopPropagation();
             handleClick(textarea, btn);
         };
+        setBtnState(btn); // restore ↩ if an undo is pending across a re-render
 
         textarea._peBtn = btn;
         textarea._peCleanup = cleanup;
@@ -793,7 +790,6 @@ Return ONLY the enhanced prompt, nothing else.`;
             cleanupTextarea(activeTextarea);
             activeTextarea = null;
         }
-        undoStack = undoStack.filter(u => u.el.isConnected);
         const textarea = getTextarea();
         if (!textarea) return;
         if (activeTextarea && activeTextarea !== textarea) {
@@ -801,6 +797,11 @@ Return ONLY the enhanced prompt, nothing else.`;
         }
         injectButton(textarea);
         activeTextarea = textarea;
+        // Composer emptied (message sent / cleared) → the old undo is stale
+        if (lastOriginal !== null && !getText(textarea).trim()) {
+            lastOriginal = null;
+            if (textarea._peBtn) setBtnState(textarea._peBtn);
+        }
     }
 
     function init() {
