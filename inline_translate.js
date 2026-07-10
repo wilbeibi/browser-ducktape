@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
 // @namespace    http://tampermonkey.net/
-// @version      1.5.0
+// @version      1.5.1
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       You
 // @match        *://*/*
@@ -445,9 +445,21 @@ html.llmtr-hide .llmtr { display: none; }
         return kana / total < 0.05 && han / total > 0.5;
     }
 
+    // innerText reflects what's actually rendered — it already omits the source
+    // of inline <script>/<style> and hidden nodes. Only fall back to textContent
+    // for un-rendered elements that carry NO such nodes, so we never harvest a
+    // script's body as if it were prose (Reddit's inline `SML.load([...])`
+    // module manifests were otherwise "translated" and injected as visible text).
+    function renderedText(el) {
+        const t = (el.innerText || '').trim();
+        if (t) return t;
+        if (el.querySelector('script, style, noscript')) return '';
+        return (el.textContent || '').trim();
+    }
+
     function qualifies(el) {
         if (el.closest('[contenteditable="true"]')) return false;
-        const text = (el.innerText || el.textContent || '').trim();
+        const text = renderedText(el);
         if (text.length < MIN_TEXT_LEN) return false;
         const letters = (text.match(/\p{L}/gu) || []).length;
         if (letters < 2) return false;
