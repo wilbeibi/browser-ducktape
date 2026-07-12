@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Gemini - Dynamic Tab Title
-// @version      1.0.3
+// @version      1.0.4
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
 // @license      MIT
@@ -10,7 +10,7 @@
 // @updateURL    https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/gemini_dynamic_tab_title.user.js
 // @description  Updates the tab title to the active conversation title
 // @match        *://gemini.google.com/*
-// @grant        none
+// @grant        GM_info
 // @run-at       document-start
 // @inject-into  content
 // ==/UserScript==

@@ -551,3 +551,85 @@ test('userscript reattaches overlay after Shopify hydration removes injected DOM
     restore();
   }
 });
+
+// ---- readerSafe: what may be handed to the third-party reader ------------
+// The reader tier POSTs the hovered URL to r.jina.ai. These tests pin down what
+// must never leave the browser.
+
+test('readerSafe allows an ordinary public article URL', () => {
+  assert.equal(core.readerSafe('https://stratechery.com/2024/01/15/some-post/'), true);
+  assert.equal(core.readerSafe('http://example.com/a?page=2&sort=asc'), true);
+});
+
+test('readerSafe rejects URLs carrying a secret in the query string', () => {
+  for (const u of [
+    'https://app.example.com/doc?token=abc123',
+    'https://example.com/x?access_token=abc',
+    'https://example.com/x?api_key=sk-live-xyz',
+    'https://example.com/reset?code=99887',
+    'https://example.com/s3?X-Amz-Signature=deadbeef',
+    'https://example.com/x?session=abc',
+  ]) {
+    assert.equal(core.readerSafe(u), false, `should reject ${u}`);
+  }
+});
+
+test('readerSafe rejects private and non-routable hosts', () => {
+  for (const u of [
+    'http://localhost:3000/admin',
+    'http://127.0.0.1/secret',
+    'http://192.168.1.10/router',
+    'http://10.0.0.5/internal',
+    'http://172.16.4.4/x',
+    'http://nas.local/files',
+    'https://wiki.internal/page',
+  ]) {
+    assert.equal(core.readerSafe(u), false, `should reject ${u}`);
+  }
+});
+
+test('readerSafe rejects embedded credentials and non-http schemes', () => {
+  assert.equal(core.readerSafe('https://user:pw@example.com/x'), false);
+  assert.equal(core.readerSafe('file:///etc/passwd'), false);
+  assert.equal(core.readerSafe('javascript:alert(1)'), false);
+  assert.equal(core.readerSafe('not a url'), false);
+});
+
+// ---- parseHeadResponse: error pages are not previews ---------------------
+
+const htmlHeaders = 'content-type: text/html; charset=utf-8';
+const errorPage = '<html><head><title>404 Not Found</title></head><body><p>No such page.</p></body></html>';
+
+test('parseHeadResponse rejects HTTP error responses instead of previewing them', () => {
+  for (const status of [403, 404, 429, 500, 503]) {
+    assert.throws(
+      () => core.parseHeadResponse(
+        { status, responseHeaders: htmlHeaders, responseText: errorPage, finalUrl: 'https://example.com/x' },
+        'https://example.com/x'
+      ),
+      /http \d+/,
+      `status ${status} should throw`
+    );
+  }
+});
+
+test('parseHeadResponse accepts 200 and 206 (we send a Range header)', () => {
+  const ok = '<html><head><title>Real Page</title>' +
+    '<meta name="description" content="A genuine description of the article."></head><body></body></html>';
+  for (const status of [200, 206]) {
+    const r = core.parseHeadResponse(
+      { status, responseHeaders: htmlHeaders, responseText: ok, finalUrl: 'https://example.com/x' },
+      'https://example.com/x'
+    );
+    assert.equal(r.title, 'Real Page', `status ${status} should parse`);
+  }
+});
+
+test('parseHeadResponse tolerates a manager that omits status', () => {
+  const ok = '<html><head><title>Real Page</title></head><body></body></html>';
+  const r = core.parseHeadResponse(
+    { responseHeaders: htmlHeaders, responseText: ok, finalUrl: 'https://example.com/x' },
+    'https://example.com/x'
+  );
+  assert.equal(r.title, 'Real Page');
+});

@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Prompt Enhancer
-// @version      4.1.2
+// @version      4.2.0
 // @description  One-click prompt enhancement for AI chat interfaces
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -14,8 +14,10 @@
 // @match        https://gemini.google.com/*
 // @match        https://lobechat.com/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_addStyle
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_registerMenuCommand
 // @connect      *
 // @run-at       document-end
 // ==/UserScript==
@@ -736,7 +738,7 @@ Return ONLY the enhanced prompt, nothing else.`;
         const btn = document.createElement('button');
         btn.className = 'pe-btn';
         btn.textContent = '✨';
-        btn.title = 'Enhance prompt (Ctrl+Shift+E)';
+        btn.title = 'Enhance prompt (Ctrl+Shift+E) — right-click for settings';
 
         const container = findContainer(textarea);
         const needsFixed = !container || getComputedStyle(container).overflow === 'hidden';
@@ -756,6 +758,14 @@ Return ONLY the enhanced prompt, nothing else.`;
             e.stopPropagation();
             handleClick(textarea, btn);
         };
+        // The in-page route to settings, same as the inline translator. The menu command
+        // is only a shortcut — Safari's Userscripts has none, and without this the API
+        // key would be unchangeable there.
+        btn.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            showSettingsModal(() => {});
+        });
         setBtnState(btn); // restore ↩ if an undo is pending across a re-render
 
         textarea._peBtn = btn;
@@ -813,9 +823,20 @@ Return ONLY the enhanced prompt, nothing else.`;
         if (initialized) return;
         initialized = true;
 
-        const style = document.createElement('style');
-        style.textContent = STYLE;
-        document.head.appendChild(style);
+        // GM_addStyle is manager-mediated and bypasses the page's style-src CSP;
+        // a hand-appended <style> does not. Fall back for managers without it.
+        if (typeof GM_addStyle !== 'function' || !GM_addStyle(STYLE)) {
+            const style = document.createElement('style');
+            style.textContent = STYLE;
+            (document.head || document.documentElement).appendChild(style);
+        }
+
+        // The only other call site is gated on a missing API key, so without this the
+        // settings become unreachable the moment a key is saved — no way to change the
+        // key, endpoint, or model. Guarded: Safari's Userscripts has no menu commands.
+        if (typeof GM_registerMenuCommand === 'function') {
+            GM_registerMenuCommand('Prompt Enhancer settings', () => showSettingsModal(() => {}));
+        }
 
         checkForTextarea();
 

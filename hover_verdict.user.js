@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Hover Link Verdict
-// @version      0.4.2
+// @version      0.5.0
 // @description  Hover a link, get a fast "should I click this?" verdict. Instant URL layer -> direct fetch -> Reader fallback -> gated LLM one-liner. No screenshots. LLM via any OpenAI-compatible endpoint (DeepSeek by default), configured the same way as the inline translator.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -96,6 +96,24 @@ const core = (() => {
     return !s.desc || !s.text || s.text.length < 300 || looksLikeShell(s.text);
   }
 
+  // The reader tier hands the URL to a third party (r.jina.ai). Anything private or
+  // secret-bearing must never leave the browser — and a URL the reader cannot reach
+  // from the public internet is pointless to send anyway.
+  const SECRET_PARAM = /(^|_|-)(token|key|secret|sig|signature|auth|password|passwd|session|sid|code|access|credential)($|_|-)/i;
+  const PRIVATE_HOST =
+    /^(localhost$|127\.|0\.0\.0\.0$|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$|.*\.local$|.*\.internal$)/i;
+
+  function readerSafe(url) {
+    let u;
+    try { u = new URL(url); } catch { return false; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    if (u.username || u.password) return false;
+    if (PRIVATE_HOST.test(u.hostname)) return false;
+    for (const k of u.searchParams.keys()) if (SECRET_PARAM.test(k)) return false;
+    if (u.hash.length > 1 && SECRET_PARAM.test(u.hash)) return false;
+    return true;
+  }
+
   function verdictEligible(s) {
     return !s.descAI && (!s.desc || s.desc.length < WEAK_DESC);
   }
@@ -134,6 +152,13 @@ const core = (() => {
   }
 
   function parseHeadResponse(r, url) {
+    // A 404/403/500 still returns HTML. Parsing it yields a preview of the error page,
+    // which then gets cached and fed to the LLM as if it were the link's content.
+    // (206 is expected here — we send a Range header.)
+    const status = r.status;
+    if (typeof status === 'number' && status !== 0 && !(status >= 200 && status < 300)) {
+      throw new Error('http ' + status);
+    }
     const ct = (r.responseHeaders.match(/content-type:\s*([^\r\n]+)/i) || [])[1] || '';
     if (!/text\/html/i.test(ct)) throw new Error('not html');
     const doc = new DOMParser().parseFromString(r.responseText, 'text/html');
@@ -270,7 +295,7 @@ const core = (() => {
     LONG_PARAGRAPH_CHARS, MIN_LONG_PARAGRAPHS,
     CONTENT_SELECTORS, CHROME_SELECTORS,
     compactText, clipSentence, looksLikeShell,
-    instant, readerNeeded, verdictEligible, verdictCacheable,
+    instant, readerNeeded, readerSafe, verdictEligible, verdictCacheable,
     cacheEntryStale, selectPruneKeys,
     buildVerdictPrompt,
     parseHeadResponse, parseReaderResponse, parseVerdictResponse,
@@ -531,7 +556,10 @@ if (typeof module !== 'undefined' && module.exports) {
   function headFetch(url){
     return new Promise((res,rej)=>{
       GM_xmlhttpRequest({
-        method:'GET', url, timeout:7000,
+        // anonymous: a hover is not a click. Without this the preview GET carries your
+        // cookies, so hovering a side-effecting link (unsubscribe, delete, logout)
+        // actually performs it as you.
+        method:'GET', url, timeout:7000, anonymous:true,
         headers:{ 'Accept':'text/html', 'Range':'bytes=0-65535' },
         onload:r=>{ try { res(core.parseHeadResponse(r, url)); } catch (e) { rej(e); } },
         onerror:()=>rej(new Error('network')), ontimeout:()=>rej(new Error('timeout')),
@@ -605,7 +633,7 @@ if (typeof module !== 'undefined' && module.exports) {
       }catch{ /* blocked / non-html / timeout: keep tier 0 */ }
     }
 
-    if(!cached.reader && core.readerNeeded(s)){
+    if(!cached.reader && core.readerNeeded(s) && core.readerSafe(fetchUrl)){
       try{
         const r1=await readerFetch(fetchUrl);
         if(active!==url) return;

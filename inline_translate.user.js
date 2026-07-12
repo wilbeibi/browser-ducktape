@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.5.1
+// @version      1.6.0
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -11,6 +11,7 @@
 // @updateURL    https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/inline_translate.user.js
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_addStyle
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
@@ -1177,7 +1178,11 @@ html.llmtr-hide .llmtr { display: none; }
         overlay.appendChild(modal);
         document.body.appendChild(overlay);
 
-        keyInput.value   = GM_getValue('API_KEY', '');
+        // The modal lives in the page's own DOM, and this script matches every site, so
+        // anything put in an input is readable by that page. Never prefill the key —
+        // show only that one is saved, and treat a blank field as "keep the saved key".
+        const savedKey = String(GM_getValue('API_KEY', '') || '');
+        if (savedKey) keyInput.placeholder = 'saved — leave blank to keep';
         urlInput.value   = GM_getValue('API_URL', '');
         modelInput.value = GM_getValue('MODEL', '');
         langInput.value  = GM_getValue('TARGET_LANG', '');
@@ -1185,7 +1190,7 @@ html.llmtr-hide .llmtr { display: none; }
 
         function getModalValues() {
             return {
-                key:   keyInput.value.trim(),
+                key:   keyInput.value.trim() || savedKey,
                 url:   urlInput.value.trim() || DEFAULT_URL,
                 model: modelInput.value.trim() || DEFAULT_MODEL,
                 lang:  langInput.value.trim() || DEFAULT_LANG,
@@ -1481,9 +1486,13 @@ Rules:
     // Init
     // ==========================================
     function init() {
-        const style = document.createElement('style');
-        style.textContent = STYLE;
-        document.head.appendChild(style);
+        // GM_addStyle is manager-mediated and bypasses the page's style-src CSP;
+        // a hand-appended <style> does not. Fall back for managers without it.
+        if (typeof GM_addStyle !== 'function' || !GM_addStyle(STYLE)) {
+            const style = document.createElement('style');
+            style.textContent = STYLE;
+            (document.head || document.documentElement).appendChild(style);
+        }
 
         document.addEventListener('keydown', (e) => {
             if (e.ctrlKey && !e.altKey && !e.metaKey && e.code === 'KeyT') {

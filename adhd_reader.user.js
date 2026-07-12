@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         ADHD Reading Ruler
-// @version      7.0
+// @version      7.1
 // @description  Highlights the text line under your cursor — but only inside the main body of genuinely long articles. Feeds, dashboards, and short pages are left alone.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -434,21 +434,28 @@ if (typeof module !== 'undefined' && module.exports) {
 
   // ---- menu + init ---------------------------------------------------------------
 
+  // Safari's Userscripts extension does not implement GM_registerMenuCommand at all,
+  // so calling it bare is a ReferenceError that kills the script at load. Alt+H still
+  // works there; only the menu entries are lost.
+  const menu = (label, fn) => {
+    if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand(label, fn);
+  };
+
   if (siteExcluded()) {
-    GM_registerMenuCommand(`Enable reading ruler on ${host}`, () => {
+    menu(`Enable reading ruler on ${host}`, () => {
       GM_setValue('excluded', JSON.stringify(excludedSites().filter(p => !hostMatches(host, p))));
       location.reload();
     });
     return;
   }
 
-  GM_registerMenuCommand('Toggle reading ruler (Alt+H)', toggleEnabled);
-  GM_registerMenuCommand(`Disable on ${host}`, () => {
+  menu('Toggle reading ruler (Alt+H)', toggleEnabled);
+  menu(`Disable on ${host}`, () => {
     GM_setValue('excluded', JSON.stringify([...excludedSites(), host]));
     unmount();
     toast(`Disabled on ${host}`);
   });
-  GM_registerMenuCommand('Force enable on this page', () => {
+  menu('Force enable on this page', () => {
     if (root) { toast('Already active'); return; }
     mount(document.body);
     toast('Forced on for this page');

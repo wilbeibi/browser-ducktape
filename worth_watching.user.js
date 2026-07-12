@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Video Watch Confirmation
-// @version      2.0
+// @version      2.1
 // @description  Adds an intentionality pause before work-hours video watching on YouTube and Bilibili, with watch-later substitution, escalating friction, self-monitoring stats, and a timebox check-in.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -16,6 +16,7 @@
 // @match        https://bilibili.com/video/*
 // @match        https://m.bilibili.com/video/*
 // @grant        window.close
+// @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
 // @run-at       document-start
 // ==/UserScript==
@@ -142,9 +143,12 @@
         return null;
     };
 
-    // Pull a stated timebox out of the intention text ("watch 10 min for...")
+    // Pull a stated timebox out of the intention text ("watch 10 min for...").
+    // Require an explicit unit: a bare number is almost always incidental
+    // ("reviewing 3 PRs"), and reading it as a 3-minute timebox is worse than
+    // falling back to the default.
     const timeboxMinutes = (intention) => {
-        const m = (intention || '').match(/(\d+)/);
+        const m = (intention || '').match(/(\d+)\s*(?:m\b|min\b|mins\b|minutes?\b|分钟|分)/i);
         if (!m) return DEFAULT_TIMEBOX_MINUTES;
         return Math.min(60, Math.max(5, parseInt(m[1], 10)));
     };
@@ -191,6 +195,9 @@
 
     function injectStyle() {
         if (document.getElementById('video-confirm-style')) return;
+        // GM_addStyle is mediated by the manager and so is not subject to the page's
+        // style-src CSP; a hand-appended <style> is. Keep the manual path as a fallback
+        // for managers that do not expose it. cleanup() finds this node by id either way.
         const style = document.createElement('style');
         style.id = 'video-confirm-style';
         style.textContent = `
@@ -396,6 +403,10 @@
                 }
             }
         `;
+        if (typeof GM_addStyle === 'function') {
+            const node = GM_addStyle(style.textContent);
+            if (node && node.nodeType === 1) { node.id = 'video-confirm-style'; return; }
+        }
         (document.head || document.documentElement).appendChild(style);
     }
 

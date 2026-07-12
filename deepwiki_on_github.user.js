@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         GitHub to DeepWiki Link
-// @version      0.2
+// @version      0.3
 // @description  Adds a button to GitHub repository pages that links to the corresponding DeepWiki page
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -10,7 +10,7 @@
 // @downloadURL  https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/deepwiki_on_github.user.js
 // @updateURL    https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/deepwiki_on_github.user.js
 // @match        https://github.com/*/*
-// @grant        none
+// @grant        GM_info
 // @inject-into  content
 // @run-at       document-idle
 // ==/UserScript==
