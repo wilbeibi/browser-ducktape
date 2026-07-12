@@ -41,10 +41,15 @@ can break any code that touched page globals.
 
 ### `GM_registerMenuCommand` is not universal
 
-Safari's Userscripts extension does not implement it. Every script here that uses it for settings
-(`inline_translate`, `hover_verdict`, `prompt_rewrite`, `worth_watching`) also exposes an in-page
-affordance — right-clicking the floating button. **Keep it that way.** The menu command is a
-convenience, never the only route to configuration.
+Safari's Userscripts extension does not implement it at all, so calling it bare is a
+`ReferenceError` that kills the script at load. Always call it through a
+`typeof GM_registerMenuCommand === 'function'` guard.
+
+Guarding stops the crash but not the loss of function. Where the menu is the *only* route to a
+feature, that feature is simply gone on Safari — today that is `hover_verdict`'s settings and
+per-site toggle, and `worth_watching`'s watch-later list, neither of which has an in-page
+affordance. `inline_translate` and `adhd_reader` are fine (right-click the floating button; Alt+H).
+When you add a feature, give it an in-page route and treat the menu command as a shortcut.
 
 ### Sync vs async storage
 
@@ -70,18 +75,46 @@ page's CSP on most sites.
 Google's CSP blocks it on Firefox. Respect these choices — they encode a bug that was already
 found and fixed once.
 
-### CSP and Trusted Types
+### CSP
 
-Strict sites — GitHub is the one that bites here, and `deepwiki_on_github` runs on it — enforce
-Trusted Types, which makes `element.innerHTML = '...'` throw. Build DOM with
-`document.createElement` and `textContent`. Inject CSS via `GM_addStyle`, not by appending a
-`<style>` tag with inline content.
+The hazard is `script-src`, not Trusted Types. GitHub — where `deepwiki_on_github` runs — serves
+`default-src 'none'; script-src github.githubassets.com; style-src 'unsafe-inline' ...`. It does
+**not** set `require-trusted-types-for`, so `innerHTML` does not throw there. Don't chase Trusted
+Types on GitHub; check the site's real CSP header before assuming.
+
+A strict `script-src` is the thing to worry about with `@grant none`. Historically Tampermonkey
+implemented `@grant none` by injecting a `<script>` tag into the page, which a strict `script-src`
+blocks outright — the script simply never runs. **This may no longer hold:** a direct test against
+Tampermonkey 5.5.0 (MV3) in Chromium showed a `@grant none` script running fine on github.com,
+apparently because MV3 injects via `chrome.userScripts` into a world the page CSP does not govern.
+
+Treat this as unsettled. The repo's stance is to sidestep the question entirely: **no script uses
+`@grant none`.** The three that used to (`deepwiki_on_github`, `gemini_dynamic_tab_title`,
+`claude_usage_pace`) now declare `@grant GM_info` — a deliberate no-op grant whose only job is to
+keep the script out of raw page-context injection. It is correct under the old model and harmless
+under the new one, and it costs nothing because none of them touch page globals. `lint_headers.js`
+enforces this. If you ever need page-context access, that is the moment to actually re-test.
+
+For CSS, prefer `GM_addStyle` over appending a hand-built `<style>` element: the manager mediates it
+and it is not subject to the page's `style-src`.
 
 ## Testing
 
-Three layers, cheapest first. Prefer the cheapest one that can catch the bug you care about.
+CI (`.github/workflows/ci.yml`) runs exactly two things: the header lint and the jsdom tests. Both
+run locally in seconds via `cd misc && npm run check`.
 
-### 1. Extracted core + jsdom (fast, the default)
+### 0. Header lint (`misc/lint_headers.js`)
+
+Zero-dependency. It encodes the repo invariants no off-the-shelf linter knows: `@grant` must match
+the `GM_*` functions actually called (both directions), `GM_xmlhttpRequest` requires `@connect`,
+`@downloadURL` must point at the file's own name, `GM_registerMenuCommand` must be `typeof`-guarded,
+CSS must go through `GM_addStyle`, and — the one that matters most — **`@version` must be bumped
+when a script changes**, because without it no installed copy ever receives the fix.
+
+Be honest about its reach: it checks headers and call sites, not behavior. Most real bugs are not
+here.
+
+### 1. Extracted core + jsdom (fast, the default — and where the bugs actually are)
 
 The established pattern: pull pure logic into a `core` object and expose it under a guard at the
 bottom of the file, so Node can require the very same file the browser runs.
@@ -92,11 +125,12 @@ if (typeof module !== 'undefined' && module.exports) {
 }
 ```
 
-See `adhd_reader.user.js:111` and `hover_verdict.user.js:288`. Tests live in `misc/`:
+See `adhd_reader.user.js:112` and `hover_verdict.user.js:314`. Tests live in `misc/`:
 
 ```bash
 cd misc && npm install
-node --test test_hover_verdict.js test_adhd_reader.js
+npm run check     # header lint + tests, exactly what CI runs
+npm test          # tests only
 ```
 
 **Write tests at this layer whenever the change has extractable logic.** It is the only layer that

@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The @version-bump gate diffs the PR against its base branch.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: misc/package-lock.json
+
+      - run: npm ci
+        working-directory: misc
+
+      # Repo invariants no off-the-shelf linter knows: @grant none vs the page CSP,
+      # the Safari API ledger, self-referential @downloadURL, @grant <-> GM_* drift,
+      # and the @version bump without which no installed copy gets the fix.
+      - name: Header lint
+        run: node misc/lint_headers.js
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+
+      - name: Unit tests (jsdom)
+        run: npm test
+        working-directory: misc

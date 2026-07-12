@@ -3,7 +3,9 @@
   "private": true,
   "description": "Tests for userscript core modules. Not published.",
   "scripts": {
-    "test": "node --test test_hover_verdict.js test_adhd_reader.js"
+    "test": "node --test test_hover_verdict.js test_adhd_reader.js",
+    "lint": "node lint_headers.js",
+    "check": "npm run lint && npm test"
   },
   "devDependencies": {
     "jsdom": "^24.1.3"
