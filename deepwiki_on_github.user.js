@@ -1,9 +1,14 @@
 // ==UserScript==
 // @name         GitHub to DeepWiki Link
-// @namespace    http://tampermonkey.net/
 // @version      0.2
 // @description  Adds a button to GitHub repository pages that links to the corresponding DeepWiki page
-// @author       You
+// @author       wilbeibi
+// @namespace    https://github.com/wilbeibi/browser-ducktape
+// @license      MIT
+// @homepageURL  https://github.com/wilbeibi/browser-ducktape
+// @supportURL   https://github.com/wilbeibi/browser-ducktape/issues
+// @downloadURL  https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/deepwiki_on_github.user.js
+// @updateURL    https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/deepwiki_on_github.user.js
 // @match        https://github.com/*/*
 // @grant        none
 // @inject-into  content

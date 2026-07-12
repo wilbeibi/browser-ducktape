@@ -1,7 +1,13 @@
 // ==UserScript==
 // @name         Claude Usage Pace Indicator
-// @namespace    https://claude.ai
 // @version      1.2
+// @author       wilbeibi
+// @namespace    https://github.com/wilbeibi/browser-ducktape
+// @license      MIT
+// @homepageURL  https://github.com/wilbeibi/browser-ducktape
+// @supportURL   https://github.com/wilbeibi/browser-ducktape/issues
+// @downloadURL  https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/claude_usage_pace.user.js
+// @updateURL    https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/claude_usage_pace.user.js
 // @description  Shows whether your Claude usage is ahead or behind the week's progress with inline text and a pace marker on the progress bar.
 // @match        https://claude.ai/settings/usage
 // @grant        none

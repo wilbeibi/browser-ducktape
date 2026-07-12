@@ -1,9 +1,14 @@
 // ==UserScript==
 // @name         ADHD Reading Ruler
-// @namespace    wilbeibi
 // @version      7.0
 // @description  Highlights the text line under your cursor — but only inside the main body of genuinely long articles. Feeds, dashboards, and short pages are left alone.
 // @author       wilbeibi
+// @namespace    https://github.com/wilbeibi/browser-ducktape
+// @license      MIT
+// @homepageURL  https://github.com/wilbeibi/browser-ducktape
+// @supportURL   https://github.com/wilbeibi/browser-ducktape/issues
+// @downloadURL  https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/adhd_reader.user.js
+// @updateURL    https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/adhd_reader.user.js
 // @match        *://*/*
 // @exclude      *://*.bilibili.com/*
 // @exclude      *://bilibili.com/*
@@ -26,7 +31,7 @@
 
 // ---------------------------------------------------------------------------
 // The pure core (no GM_* / no live-DOM assumptions) is extracted into `core`
-// and exercised by misc/test_adhd_reader.js — same layout as hover_verdict.js.
+// and exercised by misc/test_adhd_reader.js — same layout as hover_verdict.user.js.
 //
 // Detection idea: collect visible long paragraphs (outside nav/header/footer/
 // aside), credit each paragraph's length to every ancestor, then descend from

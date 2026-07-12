@@ -1,9 +1,14 @@
 // ==UserScript==
 // @name         Prompt Enhancer
-// @namespace    http://tampermonkey.net/
 // @version      4.1.2
 // @description  One-click prompt enhancement for AI chat interfaces
-// @author       You
+// @author       wilbeibi
+// @namespace    https://github.com/wilbeibi/browser-ducktape
+// @license      MIT
+// @homepageURL  https://github.com/wilbeibi/browser-ducktape
+// @supportURL   https://github.com/wilbeibi/browser-ducktape/issues
+// @downloadURL  https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/prompt_rewrite.user.js
+// @updateURL    https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/prompt_rewrite.user.js
 // @match        https://claude.ai/*
 // @match        https://chatgpt.com/*
 // @match        https://gemini.google.com/*

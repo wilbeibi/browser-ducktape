@@ -22,7 +22,7 @@ global.document = dom.window.document;
 const path = require('node:path');
 const fs = require('node:fs');
 const src = fs.readFileSync(
-  path.join(__dirname, '..', 'hover_verdict.js'),
+  path.join(__dirname, '..', 'hover_verdict.user.js'),
   'utf8'
 );
 // Evaluate the script in a function scope so `module` is defined for the export guard.

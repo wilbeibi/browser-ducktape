@@ -1,9 +1,14 @@
 // ==UserScript==
 // @name         Hover Link Verdict
-// @namespace    wilbeibi
 // @version      0.4.2
 // @description  Hover a link, get a fast "should I click this?" verdict. Instant URL layer -> direct fetch -> Reader fallback -> gated LLM one-liner. No screenshots. LLM via any OpenAI-compatible endpoint (DeepSeek by default), configured the same way as the inline translator.
 // @author       wilbeibi
+// @namespace    https://github.com/wilbeibi/browser-ducktape
+// @license      MIT
+// @homepageURL  https://github.com/wilbeibi/browser-ducktape
+// @supportURL   https://github.com/wilbeibi/browser-ducktape/issues
+// @downloadURL  https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/hover_verdict.user.js
+// @updateURL    https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/hover_verdict.user.js
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle

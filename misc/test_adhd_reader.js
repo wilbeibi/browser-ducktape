@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { JSDOM } = require('jsdom');
 
-const core = require('../adhd_reader.js');
+const core = require('../adhd_reader.user.js');
 
 const LONG = 'This paragraph is deliberately padded so that it clears the eighty character floor. '; // 85 chars
 const para = (n = 1) => `<p>${LONG.repeat(n)}</p>`;

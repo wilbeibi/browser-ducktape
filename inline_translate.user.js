@@ -1,9 +1,14 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @namespace    http://tampermonkey.net/
 // @version      1.5.1
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
-// @author       You
+// @author       wilbeibi
+// @namespace    https://github.com/wilbeibi/browser-ducktape
+// @license      MIT
+// @homepageURL  https://github.com/wilbeibi/browser-ducktape
+// @supportURL   https://github.com/wilbeibi/browser-ducktape/issues
+// @downloadURL  https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/inline_translate.user.js
+// @updateURL    https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/inline_translate.user.js
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue

@@ -3,7 +3,7 @@
   "private": true,
   "description": "Tests for userscript core modules. Not published.",
   "scripts": {
-    "test": "node --test test_hover_verdict.js"
+    "test": "node --test test_hover_verdict.js test_adhd_reader.js"
   },
   "devDependencies": {
     "jsdom": "^24.1.3"

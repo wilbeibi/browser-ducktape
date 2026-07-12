@@ -1,9 +1,14 @@
 // ==UserScript==
 // @name         Video Watch Confirmation
-// @namespace    http://tampermonkey.net/
 // @version      2.0
 // @description  Adds an intentionality pause before work-hours video watching on YouTube and Bilibili, with watch-later substitution, escalating friction, self-monitoring stats, and a timebox check-in.
-// @author       You
+// @author       wilbeibi
+// @namespace    https://github.com/wilbeibi/browser-ducktape
+// @license      MIT
+// @homepageURL  https://github.com/wilbeibi/browser-ducktape
+// @supportURL   https://github.com/wilbeibi/browser-ducktape/issues
+// @downloadURL  https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/worth_watching.user.js
+// @updateURL    https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/worth_watching.user.js
 // @match        https://www.youtube.com/*
 // @match        https://youtube.com/*
 // @match        https://m.youtube.com/*
