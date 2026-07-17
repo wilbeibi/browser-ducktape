@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.6.0
+// @version      1.7.0
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -579,6 +579,62 @@ html.llmtr-hide .llmtr { display: none; }
     }
 
     // ==========================================
+    // Mixed CJK/Western typography
+    // W3C clreq §3.2 asks for a quarter-em gap between Han and Western letters
+    // or digits; in practice everyone approximates it with one ordinary space
+    // (the 盘古之白 convention). CSS `text-autospace` does it natively, but only
+    // in Chrome 139+ / Safari 18.4+ — never Firefox — and the gap it draws is
+    // lost the moment the reader copies the text. So insert real spaces, which
+    // work everywhere and survive copy-paste. Browsers that autospace skip pairs
+    // that already have a space, so the two never stack.
+    //
+    // Han/kana ranges mirror looksLikeChinese(). CJK punctuation (、。「」，) is
+    // deliberately excluded: those glyphs carry their own side bearing already.
+    // The Western side is letters and digits per clreq, plus the few symbols
+    // that bind to them tightly enough to travel along (50% 以上, $9.99).
+    // ==========================================
+    const CJK_CLASS  = '[\\u3040-\\u30FF\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF]';
+    const WEST_CLASS = '[\\p{Script=Latin}\\p{Script=Greek}\\p{Script=Cyrillic}\\p{Nd}%$@#&]';
+    const CJK_THEN_WEST = new RegExp(`(${CJK_CLASS})(${WEST_CLASS})`, 'gu');
+    const WEST_THEN_CJK = new RegExp(`(${WEST_CLASS})(${CJK_CLASS})`, 'gu');
+
+    // Half-width brackets hug their own contents, so the gap belongs on the
+    // outside only — 中文 (English) 中文, never 中文 ( English ) 中文. Full-width
+    // （） are left alone: they carry the bearing inside the glyph already.
+    const CJK_THEN_OPEN  = new RegExp(`(${CJK_CLASS})([(\\[])`, 'gu');
+    const CLOSE_THEN_CJK = new RegExp(`([)\\]])(${CJK_CLASS})`, 'gu');
+
+    // 直角引号. “” are East-Asian-Ambiguous and exist in every Latin font, so on a
+    // Western page they get drawn by the *page's* font — narrow Latin glyphs
+    // wedged against fallback-font Han, since `font: inherit` hands us a
+    // Latin-first stack. 「」 are Wide and absent from Latin fonts, so they always
+    // resolve to the same CJK font as the text around them. This is a deliberate
+    // break from GB/T 15834—2011 (which specifies “”), bought for consistent
+    // rendering. The 1:1 map also preserves nesting, which inverts between the
+    // two systems: 国标 is 外双内单, 直角 is 外「」内『』.
+    //
+    // Depth-tracked rather than a blind replace, so a quote with no opener stays
+    // what it is: an apostrophe (don’t, McDonald’s) or an inch mark (a 6” panel).
+    function cornerQuotes(text) {
+        let dbl = 0, sgl = 0;
+        return text.replace(/[“”‘’]/g, (q) => {
+            if (q === '“') { dbl++; return '「'; }
+            if (q === '‘') { sgl++; return '『'; }
+            if (q === '”') return dbl ? (dbl--, '」') : q;
+            return sgl ? (sgl--, '』') : q;
+        });
+    }
+
+    function typesetCJK(text) {
+        const t = String(text)
+            .replace(CJK_THEN_WEST, '$1 $2')
+            .replace(WEST_THEN_CJK, '$1 $2')
+            .replace(CJK_THEN_OPEN, '$1 $2')
+            .replace(CLOSE_THEN_CJK, '$1 $2');
+        return targetIsChinese() ? cornerQuotes(t) : t;
+    }
+
+    // ==========================================
     // Translation rendering
     // ==========================================
     function ensureSpan(el) {
@@ -613,11 +669,12 @@ html.llmtr-hide .llmtr { display: none; }
     function setStreaming(el, text) {
         const s = ensureSpan(el);
         s.classList.remove('llmtr-loading', 'llmtr-error');
-        s.textContent = text;
+        s.textContent = typesetCJK(text);
     }
 
     function setDone(el, text, cfg) {
         const s = ensureSpan(el);
+        text = typesetCJK(text);
         s.classList.remove('llmtr-loading', 'llmtr-error');
         s.onclick = null;
         s.textContent = text;
@@ -1420,6 +1477,7 @@ Rules:
     function setPopupText(text, loading, error, plain) {
         if (!selPop) return;
         const body = selPop._body;
+        if (!error) text = typesetCJK(text); // error text is ours, not a translation
         if (error || plain) body.textContent = text;
         else renderSelectionPopup(body, text);
         body.classList.toggle('llmtr-sel-loading', !!loading);
