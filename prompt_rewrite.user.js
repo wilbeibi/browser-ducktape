@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Prompt Enhancer
-// @version      4.2.0
+// @version      4.2.1
 // @description  One-click prompt enhancement for AI chat interfaces
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -26,13 +26,28 @@
     'use strict';
 
     const DEFAULT_URL   = 'https://api.deepseek.com/v1/chat/completions';
-    const DEFAULT_MODEL = 'deepseek-chat';
+    const DEFAULT_MODEL = 'deepseek-v4-flash';
+
+    // DeepSeek retired 'deepseek-chat'/'deepseek-reasoner' on 2026-07-24 and the
+    // API now rejects them. Changing DEFAULT_MODEL only helps new installs — anyone
+    // who ever opened settings has the dead id in GM storage — so map it forward.
+    const LEGACY_MODELS = {
+        'deepseek-chat':     'deepseek-v4-flash',
+        'deepseek-reasoner': 'deepseek-v4-pro',
+    };
+    const resolveModel = m => LEGACY_MODELS[m] || m; // '' stays '' so callers can fall back
+
+    // The v4 line thinks by default. A rewrite is one short pass over the draft;
+    // a chain of thought only adds latency to a button the user is waiting on.
+    // Scoped to deepseek-v* because OpenAI and most OpenAI-compatible servers 400
+    // on unknown top-level body fields.
+    const thinkingOpts = m => /^deepseek-v\d/i.test(m) ? { thinking: { type: 'disabled' } } : {};
 
     function getConfig() {
         return {
             key:   String(GM_getValue('API_KEY', '') || '').trim(),
             url:   String(GM_getValue('API_URL', DEFAULT_URL) || '').trim(),
-            model: String(GM_getValue('MODEL', DEFAULT_MODEL) || '').trim(),
+            model: resolveModel(String(GM_getValue('MODEL', '') || '').trim()) || DEFAULT_MODEL,
         };
     }
 
@@ -377,7 +392,7 @@ Return ONLY the enhanced prompt, nothing else.`;
                 method: 'POST', url,
                 headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
                 timeout,
-                data: JSON.stringify({ model, max_tokens, messages }),
+                data: JSON.stringify({ model, max_tokens, messages, ...thinkingOpts(model) }),
                 onload(resp) {
                     try {
                         const data = JSON.parse(resp.responseText);
@@ -466,7 +481,7 @@ Return ONLY the enhanced prompt, nothing else.`;
         document.body.appendChild(overlay);
         keyInput.value   = GM_getValue('API_KEY', '');
         urlInput.value   = GM_getValue('API_URL', '');
-        modelInput.value = GM_getValue('MODEL', '');
+        modelInput.value = resolveModel(String(GM_getValue('MODEL', '') || ''));
         keyInput.focus();
 
         const status = statusDiv;
@@ -475,7 +490,7 @@ Return ONLY the enhanced prompt, nothing else.`;
             return {
                 key:   keyInput.value.trim(),
                 url:   urlInput.value.trim() || DEFAULT_URL,
-                model: modelInput.value.trim() || DEFAULT_MODEL,
+                model: resolveModel(modelInput.value.trim()) || DEFAULT_MODEL,
             };
         }
 

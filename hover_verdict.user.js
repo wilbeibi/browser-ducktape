@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Hover Link Verdict
-// @version      0.5.0
+// @version      0.5.1
 // @description  Hover a link, get a fast "should I click this?" verdict. Instant URL layer -> direct fetch -> Reader fallback -> gated LLM one-liner. No screenshots. LLM via any OpenAI-compatible endpoint (DeepSeek by default), configured the same way as the inline translator.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -151,6 +151,24 @@ const core = (() => {
     };
   }
 
+  // DeepSeek retired 'deepseek-chat'/'deepseek-reasoner' on 2026-07-24 and the API
+  // now rejects them. Changing DEFAULT_MODEL only helps new installs — anyone who
+  // ever opened settings has the dead id in GM storage — so map it forward.
+  // '' stays '' so callers can fall back to their own default.
+  const LEGACY_MODELS = {
+    'deepseek-chat':     'deepseek-v4-flash',
+    'deepseek-reasoner': 'deepseek-v4-pro',
+  };
+  function resolveModel(m) { return LEGACY_MODELS[m] || m; }
+
+  // The v4 line thinks by default, and this whole script is a race against a 9s
+  // timeout for a 70-token one-liner — a chain of thought is exactly what we
+  // cannot afford. Scoped to deepseek-v* because OpenAI and most
+  // OpenAI-compatible servers 400 on unknown top-level body fields.
+  function thinkingOpts(model) {
+    return /^deepseek-v\d/i.test(model || '') ? { thinking: { type: 'disabled' } } : {};
+  }
+
   function parseHeadResponse(r, url) {
     // A 404/403/500 still returns HTML. Parsing it yields a preview of the error page,
     // which then gets cached and fed to the LLM as if it were the link's content.
@@ -297,7 +315,7 @@ const core = (() => {
     compactText, clipSentence, looksLikeShell,
     instant, readerNeeded, readerSafe, verdictEligible, verdictCacheable,
     cacheEntryStale, selectPruneKeys,
-    buildVerdictPrompt,
+    buildVerdictPrompt, resolveModel, thinkingOpts,
     parseHeadResponse, parseReaderResponse, parseVerdictResponse,
     bodyTextFromDoc, snippetFromDoc, anchorText,
     mergeRedirect,
@@ -325,7 +343,7 @@ if (typeof module !== 'undefined' && module.exports) {
   const T_HIDE    = 180;
 
   const DEFAULT_URL   = 'https://api.deepseek.com/v1/chat/completions';
-  const DEFAULT_MODEL = 'deepseek-chat';
+  const DEFAULT_MODEL = 'deepseek-v4-flash';
   const READER_URL    = 'https://r.jina.ai/';
   const DISABLED_HOSTS_KEY = 'DISABLED_HOSTS';
 
@@ -333,7 +351,7 @@ if (typeof module !== 'undefined' && module.exports) {
     return {
       key:   String(GM_getValue('API_KEY', '') || '').trim(),
       url:   String(GM_getValue('API_URL', DEFAULT_URL) || '').trim(),
-      model: String(GM_getValue('MODEL', DEFAULT_MODEL) || '').trim(),
+      model: core.resolveModel(String(GM_getValue('MODEL', '') || '').trim()) || DEFAULT_MODEL,
     };
   }
   function llmEnabled() { return !!getConfig().key; }
@@ -591,6 +609,7 @@ if (typeof module !== 'undefined' && module.exports) {
     if(!text || !cfg.key) return Promise.reject(new Error('no body / no key'));
     const body = core.buildVerdictPrompt(url, text);
     body.model = cfg.model;
+    Object.assign(body, core.thinkingOpts(cfg.model));
     return new Promise((res,rej)=>{
       GM_xmlhttpRequest({
         method:'POST', url:cfg.url, timeout:9000,
@@ -748,14 +767,14 @@ if (typeof module !== 'undefined' && module.exports) {
 
     keyInput.value   = GM_getValue('API_KEY', '');
     urlInput.value   = GM_getValue('API_URL', '');
-    modelInput.value = GM_getValue('MODEL', '');
+    modelInput.value = core.resolveModel(String(GM_getValue('MODEL', '') || ''));
     readerKeyInput.value = GM_getValue('JINA_API_KEY', '');
     keyInput.focus();
 
     const vals=()=>({
       key:   keyInput.value.trim(),
       url:   urlInput.value.trim() || DEFAULT_URL,
-      model: modelInput.value.trim() || DEFAULT_MODEL,
+      model: core.resolveModel(modelInput.value.trim()) || DEFAULT_MODEL,
       readerKey: readerKeyInput.value.trim(),
     });
 
@@ -769,7 +788,7 @@ if (typeof module !== 'undefined' && module.exports) {
       GM_xmlhttpRequest({
         method:'POST', url:v.url, timeout:15000,
         headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+v.key },
-        data: JSON.stringify({ model:v.model, max_tokens:8, messages:[{role:'user',content:'hi'}] }),
+        data: JSON.stringify({ model:v.model, max_tokens:8, messages:[{role:'user',content:'hi'}], ...core.thinkingOpts(v.model) }),
         onload:r=>{
           let ok=r.status>=200&&r.status<300, msg='HTTP '+r.status;
           try{ const d=JSON.parse(r.responseText); if(!ok) msg=d?.error?.message||msg; }catch(e){}

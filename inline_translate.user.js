@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.7.0
+// @version      1.7.1
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -24,8 +24,23 @@
     'use strict';
 
     const DEFAULT_URL   = 'https://api.deepseek.com/v1/chat/completions';
-    const DEFAULT_MODEL = 'deepseek-chat';
+    const DEFAULT_MODEL = 'deepseek-v4-flash';
     const DEFAULT_LANG  = 'Simplified Chinese (简体中文)';
+
+    // DeepSeek retired 'deepseek-chat'/'deepseek-reasoner' on 2026-07-24 and the
+    // API now rejects them. Changing DEFAULT_MODEL only helps new installs — anyone
+    // who ever opened settings has the dead id in GM storage — so map it forward.
+    const LEGACY_MODELS = {
+        'deepseek-chat':     'deepseek-v4-flash',
+        'deepseek-reasoner': 'deepseek-v4-pro',
+    };
+    const resolveModel = m => LEGACY_MODELS[m] || m; // '' stays '' so callers can fall back
+
+    // The v4 line thinks by default. Translation wants tokens on the page, not on
+    // a chain of thought, and the reasoning stream would stall the progressive
+    // render — so opt out. Scoped to deepseek-v* because OpenAI and most
+    // OpenAI-compatible servers 400 on unknown top-level body fields.
+    const thinkingOpts = m => /^deepseek-v\d/i.test(m) ? { thinking: { type: 'disabled' } } : {};
 
     const MIN_TEXT_LEN       = 4;     // skip blocks shorter than this
     const MAX_SEGMENT_CHARS  = 4000;  // hard cap per block
@@ -46,7 +61,7 @@
         return {
             key:   String(GM_getValue('API_KEY', '') || '').trim(),
             url:   String(GM_getValue('API_URL', DEFAULT_URL) || '').trim(),
-            model: String(GM_getValue('MODEL', DEFAULT_MODEL) || '').trim(),
+            model: resolveModel(String(GM_getValue('MODEL', '') || '').trim()) || DEFAULT_MODEL,
             lang:  String(GM_getValue('TARGET_LANG', DEFAULT_LANG) || '').trim(),
         };
     }
@@ -727,7 +742,7 @@ html.llmtr-hide .llmtr { display: none; }
                 method: 'POST', url,
                 headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
                 timeout,
-                data: JSON.stringify({ model, max_tokens, temperature: 0.3, messages }),
+                data: JSON.stringify({ model, max_tokens, temperature: 0.3, messages, ...thinkingOpts(model) }),
                 onload(resp) {
                     try {
                         const data = JSON.parse(resp.responseText);
@@ -776,7 +791,7 @@ html.llmtr-hide .llmtr { display: none; }
                     'Accept': 'text/event-stream'
                 },
                 timeout,
-                data: JSON.stringify({ model, max_tokens, temperature: 0.3, messages, stream: true }),
+                data: JSON.stringify({ model, max_tokens, temperature: 0.3, messages, stream: true, ...thinkingOpts(model) }),
                 onprogress(resp) {
                     if (!onText) return;
                     try {
@@ -1241,7 +1256,7 @@ html.llmtr-hide .llmtr { display: none; }
         const savedKey = String(GM_getValue('API_KEY', '') || '');
         if (savedKey) keyInput.placeholder = 'saved — leave blank to keep';
         urlInput.value   = GM_getValue('API_URL', '');
-        modelInput.value = GM_getValue('MODEL', '');
+        modelInput.value = resolveModel(String(GM_getValue('MODEL', '') || ''));
         langInput.value  = GM_getValue('TARGET_LANG', '');
         keyInput.focus();
 
@@ -1249,7 +1264,7 @@ html.llmtr-hide .llmtr { display: none; }
             return {
                 key:   keyInput.value.trim() || savedKey,
                 url:   urlInput.value.trim() || DEFAULT_URL,
-                model: modelInput.value.trim() || DEFAULT_MODEL,
+                model: resolveModel(modelInput.value.trim()) || DEFAULT_MODEL,
                 lang:  langInput.value.trim() || DEFAULT_LANG,
             };
         }

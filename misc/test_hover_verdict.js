@@ -176,6 +176,24 @@ test('buildVerdictPrompt includes URL and text in the user message', () => {
   assert.ok(body.messages[1].content.includes(text));
 });
 
+test('resolveModel maps retired DeepSeek ids forward and leaves others alone', () => {
+  assert.equal(core.resolveModel('deepseek-chat'), 'deepseek-v4-flash');
+  assert.equal(core.resolveModel('deepseek-reasoner'), 'deepseek-v4-pro');
+  assert.equal(core.resolveModel('deepseek-v4-flash'), 'deepseek-v4-flash');
+  assert.equal(core.resolveModel('gpt-4o-mini'), 'gpt-4o-mini', 'other providers untouched');
+  assert.equal(core.resolveModel(''), '', 'blank stays blank so the caller can default');
+});
+
+test('thinkingOpts disables thinking for deepseek v-series only', () => {
+  assert.deepEqual(core.thinkingOpts('deepseek-v4-flash'), { thinking: { type: 'disabled' } });
+  assert.deepEqual(core.thinkingOpts('deepseek-v4-pro'), { thinking: { type: 'disabled' } });
+  // an unknown top-level field is a 400 on OpenAI and most compatible servers
+  assert.deepEqual(core.thinkingOpts('gpt-4o-mini'), {});
+  assert.deepEqual(core.thinkingOpts('llama3.1:8b'), {});
+  assert.deepEqual(core.thinkingOpts(''), {});
+  assert.deepEqual(core.thinkingOpts(null), {});
+});
+
 test('compactText collapses whitespace and trims', () => {
   assert.equal(core.compactText('  hello   world  '), 'hello world');
   assert.equal(core.compactText('\n\n\tfoo\r\nbar'), 'foo bar');
