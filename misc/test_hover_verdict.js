@@ -570,6 +570,46 @@ test('userscript reattaches overlay after Shopify hydration removes injected DOM
   }
 });
 
+// The card is dismissed by "the cursor is now over something that is not a
+// previewable link", not by "the hovered anchor fired mouseout". Chrome skips
+// that mouseout entirely when the anchor is re-rendered or removed under the
+// cursor (SPA nav, feed refresh, click-through), which used to pin the card to
+// the page until the next link hover.
+test('card hides when the hovered anchor is replaced under the cursor', async () => {
+  const pageDom = new JSDOM(`
+    <!DOCTYPE html><html><head></head><body>
+      <main role="main">
+        <article>
+          ${LONG_P}${LONG_P}${LONG_P}
+          <p id="para">Build everything with <a id="nix" href="https://shopify.engineering/what-is-nix">Nix</a>.</p>
+        </article>
+      </main>
+    </body></html>
+  `, { url: GOLDEN.shopifyRiver, pretendToBeVisual: true });
+  const restore = installUserscript(pageDom);
+  const doc = pageDom.window.document;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const mouse = (type, target, relatedTarget) => target.dispatchEvent(
+    new pageDom.window.MouseEvent(type, { bubbles: true, clientX: 25, clientY: 30, relatedTarget })
+  );
+  try {
+    const link = doc.querySelector('#nix');
+    mouse('mouseover', link);
+    await sleep(700);                       // T_FETCH + T_SHOW
+    assert.ok(doc.querySelector('#hlv').classList.contains('on'), 'card should be showing');
+
+    // The framework swaps the anchor out. No mouseout for it is ever delivered;
+    // the browser only reports a mouseover on whatever is under the cursor now.
+    const para = doc.querySelector('#para');
+    link.replaceWith(doc.createTextNode('Nix'));
+    mouse('mouseover', para, null);
+    await sleep(300);                       // T_HIDE
+    assert.equal(doc.querySelector('#hlv').classList.contains('on'), false, 'card should be dismissed');
+  } finally {
+    restore();
+  }
+});
+
 // ---- readerSafe: what may be handed to the third-party reader ------------
 // The reader tier POSTs the hovered URL to r.jina.ai. These tests pin down what
 // must never leave the browser.

@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Hover Link Verdict
-// @version      0.5.1
+// @version      0.5.2
 // @description  Hover a link, get a fast "should I click this?" verdict. Instant URL layer -> direct fetch -> Reader fallback -> gated LLM one-liner. No screenshots. LLM via any OpenAI-compatible endpoint (DeepSeek by default), configured the same way as the inline translator.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -499,7 +499,7 @@ if (typeof module !== 'undefined' && module.exports) {
 
   ensureCard();
 
-  let tFetch=null, tShow=null, tVerdict=null, tDeep=null, tHide=null, active=null, paintSeq=0;
+  let tFetch=null, tShow=null, tVerdict=null, tDeep=null, tHide=null, active=null, paintSeq=0, hoverAnchor=null;
 
   function rgbaParts(value) {
     const m = String(value || '').match(/rgba?\(([^)]+)\)/i);
@@ -700,7 +700,8 @@ if (typeof module !== 'undefined' && module.exports) {
     }
   }
 
-  function hide(){ card.classList.remove('on','updating'); active=null; paintSeq++; [tFetch,tShow,tVerdict,tDeep].forEach(clearTimeout); }
+  function hide(){ hoverAnchor=null; card.classList.remove('on','updating'); active=null; paintSeq++; [tFetch,tShow,tVerdict,tDeep].forEach(clearTimeout); }
+  function scheduleHide(){ clearTimeout(tFetch); clearTimeout(tHide); tHide=setTimeout(hide, T_HIDE); }
 
   // Re-evaluated per URL so SPA navigation (blog -> index -> post) doesn't
   // freeze the article-vs-linklist scoping at whatever the first page was.
@@ -721,7 +722,14 @@ if (typeof module !== 'undefined' && module.exports) {
   }
 
   document.addEventListener('mouseover', e=>{
-    const a=e.target?.closest?.('a'); if(!eligible(a)) return;
+    const a=e.target?.closest?.('a');
+    // Anything that is not a previewable link dismisses the card. Waiting for
+    // the anchor's own mouseout is not enough: when the anchor is re-rendered
+    // or removed under a still cursor (SPA nav, feed refresh, click-through),
+    // the browser fires mouseover on whatever replaced it and never fires that
+    // mouseout at all — which left the card pinned to the page forever.
+    if(!eligible(a)){ if(hoverAnchor) scheduleHide(); return; }
+    hoverAnchor=a;
     ensureCard();
     clearTimeout(tHide); [tFetch,tShow,tVerdict,tDeep].forEach(clearTimeout);
     const {clientX:x, clientY:y}=e;
@@ -735,10 +743,12 @@ if (typeof module !== 'undefined' && module.exports) {
     const a=e.target?.closest?.('a');
     if(!a) return;
     if(e.relatedTarget && a.contains(e.relatedTarget)) return;
-    clearTimeout(tFetch);
-    tHide=setTimeout(hide, T_HIDE);
+    scheduleHide();
   });
   document.addEventListener('scroll', hide, {passive:true});
+  // No mouse event arrives while the window is in the background, so a card
+  // left open by an alt-tab would otherwise hang over the page until the next hover.
+  window.addEventListener('blur', hide);
 
   function showSettings(){
     if(document.querySelector('.hlv-overlay')) return;
