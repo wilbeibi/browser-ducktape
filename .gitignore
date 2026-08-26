@@ -9,4 +9,5 @@ misc/*
 !misc/package-lock.json
 !misc/test_hover_verdict.js
 !misc/test_adhd_reader.js
+!misc/test_inline_translate.js
 !misc/lint_headers.js

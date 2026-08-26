@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.7.1
+// @version      1.8.0
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -435,6 +435,23 @@ html.llmtr-hide .llmtr { display: none; }
         return el.querySelector(BLOCKY_SELECTOR) !== null;
     }
 
+    // A node that interrupts a run of inline content: it either is a block-level
+    // element or has one buried inside it (<span><p>..</p></span>). Either way
+    // the browser has already broken the inline flow around it.
+    function isBlockRun(node) {
+        return node.nodeType === 1 &&
+            (node.matches(BLOCKY_SELECTOR) || node.querySelector(BLOCKY_SELECTOR) !== null);
+    }
+
+    // Where NOT to lift loose text into a <div> wrapper. CSS table fixup would
+    // foster-parent it back out of these, moving the text on the page. Every
+    // other element is fair game: an element that holds both text and a block
+    // child is *already* laying that text out as anonymous block boxes (CSS
+    // 9.2.1.1), so wrapping the runs changes nothing visually — including
+    // inside an inline box like <font> or <a>, where block-in-inline splitting
+    // has broken the flow anyway.
+    const NO_SPLIT = new Set(['TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR']);
+
     // True when the element carries its own text directly (not only via child
     // elements) — lets a <font>/<center>/bare wrapper that holds prose count as
     // a translatable leaf even though its tag isn't in the block whitelist.
@@ -490,6 +507,17 @@ html.llmtr-hide .llmtr { display: none; }
         return true;
     }
 
+    // A leaf is any element with no block-level descendant that carries its
+    // own text — not just whitelisted tags. This covers old-web pages that
+    // keep paragraphs in <font>/<center>/bare wrappers with no semantic tags
+    // (paulgraham.com, antirez's old blog, mailing-list archives, ...) and
+    // modern ones that style <div>s as paragraphs (Tailwind/MDX blogs).
+    function isTextLeaf(el) {
+        const tag = el.tagName;
+        return !hasBlockChild(el) &&
+            (BLOCK_TAGS.has(tag) || tag === 'DIV' || hasDirectText(el));
+    }
+
     function collect(el, out) {
         if (!el || el.nodeType !== 1) return;
         const tag = el.tagName;
@@ -498,12 +526,7 @@ html.llmtr-hide .llmtr { display: none; }
         if (el.isContentEditable) return;
         if ((tag === 'HEADER' || tag === 'FOOTER') && !el.closest('article, main')) return;
 
-        // A leaf is any element with no block-level descendant that carries its
-        // own text — not just whitelisted tags. This covers old-web pages that
-        // keep paragraphs in <font>/<center>/bare wrappers with no semantic tags
-        // (paulgraham.com, antirez's old blog, mailing-list archives, ...).
-        const isLeafCandidate = !hasBlockChild(el) &&
-            (BLOCK_TAGS.has(tag) || tag === 'DIV' || hasDirectText(el));
+        const isLeafCandidate = isTextLeaf(el);
 
         if (isLeafCandidate) {
             // A single leaf may pack several paragraphs separated by <br><br>.
@@ -519,6 +542,17 @@ html.llmtr-hide .llmtr { display: none; }
                 }
                 return;
             }
+        } else if (!el.dataset.llmtrSplit && !NO_SPLIT.has(tag) && hasDirectText(el)) {
+            // A container holding prose of its own *and* a block child is neither
+            // a leaf nor reachable by the recursion below, which descends only
+            // into elements — its text nodes were simply dropped. This is HTML's
+            // ordinary mixed content, not an edge case: <li>text<ul>..</ul></li>
+            // from every Markdown renderer, a Blogger post body of <br><br>
+            // paragraphs with a <ul> partway down, and paulgraham.com, where one
+            // 82-char <blockquote> disqualified a 66k-char essay. Wrap the runs
+            // into ordinary leaves and leave the block children where they are.
+            el.dataset.llmtrSplit = '1';
+            splitInlineRuns(el, 1);
         }
         for (let c = el.firstElementChild; c; c = c.nextElementSibling) {
             collect(c, out);
@@ -551,12 +585,22 @@ html.llmtr-hide .llmtr { display: none; }
     function splitBrParagraphs(el) {
         el.dataset.llmtrSplit = '1';
         const host = brParagraphHost(el);
-        if (!host) return false;
+        return host ? splitInlineRuns(host, 2) : false;
+    }
+
+    // Wrap `host`'s own inline content in one <div class="llmtr-seg"> per
+    // paragraph. Paragraphs are separated by "<br><br>" runs *or* by a
+    // block-level child, which stays where it is rather than being absorbed
+    // into a segment. Returns true when it produced at least `minRuns`
+    // paragraphs; the caller flags `host`'s subtree so this runs once.
+    function splitInlineRuns(host, minRuns) {
         const kids = Array.from(host.childNodes);
         const runs = [];
         let cur = [];
+        const flush = () => { if (cur.length) { runs.push(cur); cur = []; } };
         for (let i = 0; i < kids.length; i++) {
             const n = kids[i];
+            if (isBlockRun(n)) { flush(); continue; }
             if (!(n.nodeType === 1 && n.tagName === 'BR')) { cur.push(n); continue; }
             // measure a run of <br>s, hopping over blank text nodes between them
             let j = i + 1, brs = 1;
@@ -567,17 +611,17 @@ html.llmtr-hide .llmtr { display: none; }
                 else break;
             }
             if (brs >= 2) {                       // paragraph boundary
-                if (cur.length) { runs.push(cur); cur = []; }
+                flush();
                 i = j - 1;                        // consume the whole separator run
             } else {
                 cur.push(n);                      // lone <br> stays in the paragraph
             }
         }
-        if (cur.length) runs.push(cur);
+        flush();
 
         const textRuns = runs.filter(run => run.some(n =>
             /\p{L}/u.test(n.nodeType === 3 ? n.nodeValue : (n.textContent || ''))));
-        if (textRuns.length < 2) return false;
+        if (textRuns.length < minRuns) return false;
 
         for (const run of textRuns) {
             const seg = document.createElement('div');
@@ -1156,27 +1200,115 @@ html.llmtr-hide .llmtr { display: none; }
         updateFab();
     }
 
+    // The button is the only discoverable way into the feature: Ctrl+T and the
+    // menu work without it, but nothing on screen says so. So treat a missing
+    // button as a bug to repair rather than a state to keep — rebuild it
+    // whenever it is gone, however it went.
+    function ensureFab() {
+        if (fab && fab.isConnected) return;
+        fab = null; // detached by a framework re-render; the old node is dead
+        makeFab();
+    }
+
     // Only surface the button on pages with a meaningful amount of
     // foreign-language article text; the hotkey/menu always work.
+    //
+    // This walks the DOM exactly the way collect() does — same skip rules,
+    // same leaf test, stopping at each leaf so nested wrappers aren't counted
+    // twice — because the two must agree on what a paragraph is. Gating on
+    // `p, h1, h2` instead hid the button on every site that styles <div>s as
+    // paragraphs (Tailwind/MDX blogs, and any CMS emitting <div class="para">),
+    // where translation itself worked fine the moment you pressed Ctrl+T.
+    const PROSE_MIN_CHARS  = 600;
+    const PROSE_MIN_BLOCKS = 3;
+    // Accepting <div> leaves means tag semantics no longer separate prose from
+    // chrome, so length has to. A leaf under ~120 chars is a headline, a menu
+    // item, or a card blurb — measured across a corpus of real pages, 100–150
+    // is a flat plateau that keeps every article (spiraldb, Vercel, Anthropic,
+    // Wikipedia, NYT, simonwillison) and drops google.com and the HN front
+    // page. Below 100 google.com's hidden legal strings sneak through; at 200
+    // the NYT homepage's short summaries fall out.
+    const PROSE_MIN_LEAF   = 120;
+
+    // Counted in Latin-equivalent characters, not raw ones: a Han character
+    // carries roughly a Latin word, so the same paragraph is ~2.5x shorter in
+    // Chinese or Japanese. Measuring raw length would hold CJK pages to a much
+    // longer paragraph and hide the button for anyone translating *out* of CJK.
+    const CJK_CHAR = new RegExp(CJK_CLASS, 'gu');
+    const CJK_WEIGHT = 2.5;
+
+    function proseWeight(text) {
+        const cjk = (text.match(CJK_CHAR) || []).length;
+        return text.length + cjk * (CJK_WEIGHT - 1);
+    }
+
+    function enoughProse(acc) {
+        return acc.chars > PROSE_MIN_CHARS && acc.blocks >= PROSE_MIN_BLOCKS;
+    }
+
+    // An element's own text — direct child nodes only, so an ancestor never
+    // inherits credit for a descendant's prose — plus the number of "<br><br>"
+    // paragraph breaks directly inside it. Mirrors what splitInlineRuns() will
+    // carve the element into: block children are boundaries, not content.
+    function directProse(el) {
+        let text = '', breaks = 0, brRun = 0;
+        for (let n = el.firstChild; n; n = n.nextSibling) {
+            if (n.nodeType === 1 && n.tagName === 'BR') {
+                if (++brRun === 2) breaks++;
+                continue;
+            }
+            if (n.nodeType === 3 && !/\S/.test(n.nodeValue)) continue; // blank between <br>s
+            brRun = 0;
+            if (n.nodeType === 3) text += n.nodeValue;
+            else if (!isBlockRun(n) && !SKIP_TAGS.has(n.tagName)) text += n.textContent || '';
+        }
+        return { text: text.trim(), breaks };
+    }
+
+    function countProse(acc, text, breaks) {
+        const w = proseWeight(text);
+        if (w < PROSE_MIN_LEAF || (acc.skipCJK && looksLikeChinese(text))) return;
+        acc.chars += w;
+        acc.blocks += 1 + breaks; // each "<br><br>" run becomes its own paragraph
+    }
+
+    function measureProse(el, acc) {
+        if (!el || el.nodeType !== 1 || enoughProse(acc)) return;
+        const tag = el.tagName;
+        if (SKIP_TAGS.has(tag)) return; // also drops NAV/ASIDE/FORM chrome
+        if ((tag === 'HEADER' || tag === 'FOOTER') && !el.closest('article, main')) return;
+        if (isTextLeaf(el)) {
+            // textContent, not innerText: this runs on a poll for up to two
+            // minutes, and innerText forces layout on every candidate.
+            // brParagraphHost() is the same node splitBrParagraphs() will split
+            // on, so the block count matches what collect() ends up producing —
+            // an old-web essay in one <font> is N paragraphs here, not one.
+            const host = brParagraphHost(el);
+            countProse(acc, (el.textContent || '').trim(), host ? directProse(host).breaks : 0);
+            return; // never descend into a leaf
+        }
+        // Not a leaf, but it may still hold prose of its own between its block
+        // children — the Blogger post-body shape. collect() lifts that text into
+        // paragraphs, so the gate has to see it too.
+        if (!NO_SPLIT.has(tag) && hasDirectText(el)) {
+            const own = directProse(el);
+            countProse(acc, own.text, own.breaks);
+            if (enoughProse(acc)) return;
+        }
+        for (let c = el.firstElementChild; c; c = c.nextElementSibling) measureProse(c, acc);
+    }
+
     function pageLooksTranslatable() {
-        let chars = 0, blocks = 0;
-        for (const p of document.querySelectorAll('article p, main p, p, h1, h2')) {
-            const t = (p.textContent || '').trim();
-            if (t.length < 30 || looksLikeChinese(t)) continue;
-            chars += t.length;
-            blocks++;
-            if (chars > 600 && blocks >= 3) return true;
-        }
-        // Old-web fallback: a text container whose paragraphs are <br><br> runs
-        // with no semantic <p> (paulgraham.com, ...). Still requires real
-        // paragraph structure, so app UIs without prose stay button-free.
-        for (const c of document.querySelectorAll('font, td, div, blockquote')) {
-            const t = (c.textContent || '').trim();
-            if (t.length < 600 || looksLikeChinese(t)) continue;
-            if (c.querySelector(BLOCKY_SELECTOR)) continue; // only leaf text containers
-            if ((c.innerHTML.match(/(?:<br\s*\/?>\s*){2,}/gi) || []).length >= 2) return true;
-        }
-        return false;
+        // Chinese source text is only "nothing to do" when Chinese is also the
+        // target; skipping it unconditionally hid the button for anyone
+        // translating out of Chinese. qualifies() has always guarded it this
+        // way — the gate did not. Resolved once per call, not per leaf.
+        const acc = { chars: 0, blocks: 0, skipCJK: targetIsChinese() };
+        // A single walk suffices: counting "<br><br>" breaks as paragraphs means
+        // an old-web essay in one <font> or <div> now clears PROSE_MIN_BLOCKS on
+        // its own, which is what the separate br-container fallback used to do.
+        measureProse(document.body, acc);
+        return enoughProse(acc);
     }
 
     // ==========================================
@@ -1578,6 +1710,9 @@ Rules:
 
         if (typeof GM_registerMenuCommand === 'function') {
             GM_registerMenuCommand('Translate / toggle (Ctrl+T)', toggle);
+            // For pages the gate misjudges: the feature works, so let the user
+            // say so rather than leaving them with an invisible entry point.
+            GM_registerMenuCommand('Show translate button', ensureFab);
             GM_registerMenuCommand('Settings', () => showSettingsModal(() => {}));
         }
 
@@ -1589,11 +1724,33 @@ Rules:
         // the feature looking broken (Ctrl+T worked, but nothing showed it).
         let attempts = 0;
         const tryShowFab = () => {
-            if (fab) return;
-            if (CHAT || pageLooksTranslatable()) { makeFab(); return; }
+            if (fab && fab.isConnected) return;
+            let looksGood = false;
+            // A throw here used to end the chain for the life of the page, and
+            // because Ctrl+T is bound earlier in init() the result was a script
+            // that translated fine but could never show its own button.
+            try {
+                looksGood = CHAT || pageLooksTranslatable();
+            } catch (e) {
+                console.warn('[llmtr] translatability check failed:', e);
+            }
+            if (looksGood) { ensureFab(); return; }
             if (++attempts < 40) setTimeout(tryShowFab, attempts < 10 ? 1500 : 4000);
         };
         tryShowFab();
+
+        // Re-arm on the two events that outlive the poll. Both are ordinary on
+        // app-shell sites: an SPA route change swaps in an article long after
+        // load, and a re-render can detach a button that was already up. The
+        // guard is two string compares, so the gate itself still runs rarely.
+        let lastUrl = location.href;
+        setInterval(() => {
+            const moved = location.href !== lastUrl;
+            if (!moved && (!fab || fab.isConnected)) return;
+            lastUrl = location.href;
+            attempts = 0;
+            tryShowFab();
+        }, 3000);
     }
 
     if (document.readyState === 'loading') {

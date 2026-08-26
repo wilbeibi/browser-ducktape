@@ -3,7 +3,7 @@
   "private": true,
   "description": "Tests for userscript core modules. Not published.",
   "scripts": {
-    "test": "node --test test_hover_verdict.js test_adhd_reader.js",
+    "test": "node --test test_hover_verdict.js test_adhd_reader.js test_inline_translate.js",
     "lint": "node lint_headers.js",
     "check": "npm run lint && npm test"
   },
