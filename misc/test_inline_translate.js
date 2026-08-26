@@ -19,14 +19,16 @@ const { JSDOM } = require('jsdom');
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'inline_translate.user.js'), 'utf8');
 
 // Runs the userscript against a document and hands the live window to `probe`.
-async function runScript(bodyHtml, { lang = 'Simplified Chinese (简体中文)', mutate } = {}, probe) {
+async function runScript(bodyHtml, { lang = 'Simplified Chinese (简体中文)', mutate,
+                                     apiKey = 'sk-test', apiUrl } = {}, probe) {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>${bodyHtml}</body></html>`,
     { url: 'https://example.test/article' });
   const w = dom.window;
   if (w.document.readyState !== 'complete') {
     await new Promise(res => w.document.addEventListener('DOMContentLoaded', res, { once: true }));
   }
-  const gm = { API_KEY: 'sk-test', TARGET_LANG: lang };
+  const gm = { API_KEY: apiKey, TARGET_LANG: lang };
+  if (apiUrl !== undefined) gm.API_URL = apiUrl;
   const heartbeats = []; // setInterval callbacks, so tests can tick them directly
   const shim = {
     window: w, document: w.document, location: w.location, navigator: w.navigator,
@@ -246,4 +248,94 @@ test('an SPA route change re-runs the gate after the poll stopped', async () => 
     return !!w.document.querySelector('.llmtr-fab');
   });
   assert.equal(shown, true);
+});
+
+// ---------------------------------------------------------------------------
+// First-run setup
+// ---------------------------------------------------------------------------
+
+// With no key saved, Ctrl+T opens the setup modal instead of translating.
+// The picker exists because a working key still fails when the model id does
+// not match the endpoint: OpenRouter namespaces its ids and DeepSeek does not.
+const openSetup = (opts, probe) => runScript('<div id="root"></div>',
+  { apiKey: '', ...opts }, (w) => {
+    w.document.dispatchEvent(new w.KeyboardEvent('keydown',
+      { key: 't', code: 'KeyT', ctrlKey: true, bubbles: true }));
+    const modal = w.document.querySelector('.llmtr-modal');
+    assert.ok(modal, 'setup modal should open when no key is saved');
+    const [url, model] = [...modal.querySelectorAll('input')].slice(1, 3);
+    return probe({ w, modal, sel: modal.querySelector('select'), url, model });
+  });
+
+const suggestions = (modal) =>
+  [...modal.querySelectorAll('datalist option')].map(o => o.value);
+
+test('first-run setup offers a provider picker', async () => {
+  const ids = await openSetup({}, ({ sel }) => [...sel.options].map(o => o.value));
+  assert.deepEqual(ids, ['deepseek', 'openrouter', 'custom']);
+});
+
+test('first run opens on the provider the script ships with', async () => {
+  const got = await openSetup({}, ({ sel }) => sel.value);
+  assert.equal(got, 'deepseek');
+});
+
+test('choosing OpenRouter fills the endpoint and suggests namespaced ids', async () => {
+  const got = await openSetup({}, ({ modal, sel, url }) => {
+    sel.value = 'openrouter';
+    sel.onchange();
+    return { url: url.value, models: suggestions(modal) };
+  });
+  assert.equal(got.url, 'https://openrouter.ai/api/v1/chat/completions');
+  assert.ok(got.models.length, 'OpenRouter should suggest models');
+  assert.ok(got.models.every(m => m.includes('/')),
+    `OpenRouter ids must be namespaced, got ${got.models}`);
+});
+
+test('switching provider drops a model id that belongs to the other one', async () => {
+  const got = await openSetup({}, ({ sel, model }) => {
+    model.value = 'deepseek-v4-flash';   // valid on DeepSeek, 404s on OpenRouter
+    sel.value = 'openrouter';
+    sel.onchange();
+    return model.value;
+  });
+  assert.equal(got, '');
+});
+
+test('a saved OpenRouter endpoint reopens on OpenRouter', async () => {
+  const got = await openSetup(
+    { apiUrl: 'https://openrouter.ai/api/v1/chat/completions' },
+    ({ sel }) => sel.value);
+  assert.equal(got, 'openrouter');
+});
+
+// Host match, not string match: a saved URL may differ in path and still be
+// the same service.
+test('a saved endpoint on the same host still matches its provider', async () => {
+  const got = await openSetup(
+    { apiUrl: 'https://openrouter.ai/api/v1/chat/completions/' },
+    ({ sel }) => sel.value);
+  assert.equal(got, 'openrouter');
+});
+
+test('typing an unknown endpoint switches the picker to Custom', async () => {
+  const got = await openSetup({}, ({ sel, url }) => {
+    url.value = 'https://llm.internal.example/v1/chat/completions';
+    url.oninput();
+    return sel.value;
+  });
+  assert.equal(got, 'custom');
+});
+
+// The picker is a convenience, not a gate — the fields stay free text so an
+// endpoint serving ids we have never heard of still works.
+test('Custom leaves the endpoint the user typed alone', async () => {
+  const got = await openSetup({}, ({ sel, url }) => {
+    url.value = 'https://llm.internal.example/v1/chat/completions';
+    url.oninput();
+    sel.value = 'custom';
+    sel.onchange();
+    return url.value;
+  });
+  assert.equal(got, 'https://llm.internal.example/v1/chat/completions');
 });

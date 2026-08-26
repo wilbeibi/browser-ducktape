@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.8.1
+// @version      1.9.0
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -55,6 +55,30 @@
     const thinkingOpts = (m, url) =>
         isOpenRouter(url)              ? { reasoning: { exclude: true } } :
         /^deepseek-v\d/i.test(m || '') ? { thinking: { type: 'disabled' } } : {};
+
+    // Setup presets. The URL and model fields stay free text — any
+    // OpenAI-compatible endpoint works, and no list can stay current — so these
+    // only save the user from looking up an endpoint and from the one detail
+    // that silently breaks a working key: OpenRouter namespaces its model ids
+    // ('deepseek/deepseek-chat'), and a bare id 404s there.
+    const PROVIDERS = [
+        { id: 'deepseek', name: 'DeepSeek', url: DEFAULT_URL,
+          models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
+        { id: 'openrouter', name: 'OpenRouter', url: 'https://openrouter.ai/api/v1/chat/completions',
+          models: ['deepseek/deepseek-chat', 'openai/gpt-4o-mini',
+                   'google/gemini-2.5-flash-lite', 'anthropic/claude-sonnet-4.5'] },
+        { id: 'custom', name: 'Custom (OpenAI-compatible)', url: '', models: [] },
+    ];
+    const CUSTOM_PROVIDER = PROVIDERS[PROVIDERS.length - 1];
+
+    // Match on host, not the whole string: a saved URL may differ in path or
+    // trailing slash and still be the same service.
+    function providerFor(url) {
+        try {
+            const host = new URL(url).hostname;
+            return PROVIDERS.find(p => p.url && new URL(p.url).hostname === host) || CUSTOM_PROVIDER;
+        } catch { return CUSTOM_PROVIDER; }
+    }
 
     const MIN_TEXT_LEN       = 4;     // skip blocks shorter than this
     const MAX_SEGMENT_CHARS  = 4000;  // hard cap per block
@@ -278,7 +302,8 @@ html.llmtr-hide .llmtr { display: none; }
     color: #555;
     margin-bottom: 4px;
 }
-.llmtr-modal input {
+.llmtr-modal input,
+.llmtr-modal select {
     width: 100%;
     box-sizing: border-box;
     padding: 7px 10px;
@@ -287,7 +312,8 @@ html.llmtr-hide .llmtr { display: none; }
     font-size: 13px;
     margin-bottom: 12px;
 }
-.llmtr-modal input:focus { outline: none; border-color: #7c7cff; }
+.llmtr-modal input:focus,
+.llmtr-modal select:focus { outline: none; border-color: #7c7cff; }
 .llmtr-modal-actions {
     display: flex;
     justify-content: flex-end;
@@ -1368,10 +1394,44 @@ html.llmtr-hide .llmtr { display: none; }
             return input;
         }
 
+        function addSelect(labelText, options) {
+            const label = document.createElement('label');
+            label.textContent = labelText;
+            modal.appendChild(label);
+            const sel = document.createElement('select');
+            for (const o of options) {
+                const opt = document.createElement('option');
+                opt.value = o.id;
+                opt.textContent = o.name;
+                sel.appendChild(opt);
+            }
+            modal.appendChild(sel);
+            return sel;
+        }
+
         const keyInput   = addField('API Key *', 'password', 'sk-...');
+        const provSelect = addSelect('Provider', PROVIDERS);
         const urlInput   = addField('API URL', 'text', DEFAULT_URL);
         const modelInput = addField('Model', 'text', DEFAULT_MODEL);
         const langInput  = addField('Target language', 'text', DEFAULT_LANG);
+
+        // Suggestions, not a whitelist: a <datalist> leaves the field free text,
+        // so an endpoint serving ids we have never heard of still works.
+        const modelList = document.createElement('datalist');
+        modelList.id = 'llmtr-model-suggestions';
+        modal.appendChild(modelList);
+        modelInput.setAttribute('list', modelList.id);
+
+        function applyProvider(prov, fillUrl) {
+            if (fillUrl && prov.url) urlInput.value = prov.url;
+            modelList.textContent = '';
+            for (const m of prov.models) {
+                const opt = document.createElement('option');
+                opt.value = m;
+                modelList.appendChild(opt);
+            }
+            modelInput.placeholder = prov.models[0] || DEFAULT_MODEL;
+        }
 
         const status = document.createElement('div');
         status.className = 'llmtr-test-status';
@@ -1404,6 +1464,28 @@ html.llmtr-hide .llmtr { display: none; }
         urlInput.value   = GM_getValue('API_URL', '');
         modelInput.value = resolveModel(String(GM_getValue('MODEL', '') || ''));
         langInput.value  = GM_getValue('TARGET_LANG', '');
+
+        // Reflect whatever is already saved; on a first run that is the default
+        // endpoint, so the picker opens on the provider the script ships with.
+        applyProvider(providerFor(urlInput.value || DEFAULT_URL), false);
+        provSelect.value = providerFor(urlInput.value || DEFAULT_URL).id;
+
+        provSelect.onchange = () => {
+            const prov = PROVIDERS.find(x => x.id === provSelect.value) || CUSTOM_PROVIDER;
+            applyProvider(prov, true);
+            // Ids do not carry across providers — OpenRouter namespaces them and
+            // DeepSeek does not — so a stale one would just 404 on the first call.
+            if (prov.models.length && !prov.models.includes(modelInput.value.trim())) {
+                modelInput.value = '';
+            }
+        };
+        // Typing an endpoint by hand still drives the picker, so the two agree.
+        urlInput.oninput = () => {
+            const prov = providerFor(urlInput.value);
+            provSelect.value = prov.id;
+            applyProvider(prov, false);
+        };
+
         keyInput.focus();
 
         function getModalValues() {
