@@ -20,7 +20,7 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'inline_translate.user.js
 
 // Runs the userscript against a document and hands the live window to `probe`.
 async function runScript(bodyHtml, { lang = 'Simplified Chinese (简体中文)', mutate,
-                                     apiKey = 'sk-test', apiUrl } = {}, probe) {
+                                     apiKey = 'sk-test', apiUrl, xhr } = {}, probe) {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>${bodyHtml}</body></html>`,
     { url: 'https://example.test/article' });
   const w = dom.window;
@@ -30,6 +30,7 @@ async function runScript(bodyHtml, { lang = 'Simplified Chinese (简体中文)',
   const gm = { API_KEY: apiKey, TARGET_LANG: lang };
   if (apiUrl !== undefined) gm.API_URL = apiUrl;
   const heartbeats = []; // setInterval callbacks, so tests can tick them directly
+  const requests = [];   // every GM_xmlhttpRequest the script issued
   const shim = {
     window: w, document: w.document, location: w.location, navigator: w.navigator,
     localStorage: w.localStorage, MutationObserver: w.MutationObserver,
@@ -42,12 +43,12 @@ async function runScript(bodyHtml, { lang = 'Simplified Chinese (简体中文)',
     GM_setValue: (k, v) => { gm[k] = v; },
     GM_addStyle: () => true,
     GM_registerMenuCommand: () => {},
-    GM_xmlhttpRequest: () => {},
+    GM_xmlhttpRequest: (opts) => { requests.push(opts); if (xhr) xhr(opts); },
   };
   if (mutate) mutate(w); // build shapes the HTML parser refuses to produce
   const keys = Object.keys(shim);
   new Function(...keys, SRC)(...keys.map(k => shim[k]));
-  const result = probe(w, { tick: () => heartbeats.forEach(fn => fn()) });
+  const result = probe(w, { tick: () => heartbeats.forEach(fn => fn()), gm, requests });
   w.close();
   return result;
 }
@@ -258,13 +259,13 @@ test('an SPA route change re-runs the gate after the poll stopped', async () => 
 // The picker exists because a working key still fails when the model id does
 // not match the endpoint: OpenRouter namespaces its ids and DeepSeek does not.
 const openSetup = (opts, probe) => runScript('<div id="root"></div>',
-  { apiKey: '', ...opts }, (w) => {
+  { apiKey: '', ...opts }, (w, ctx) => {
     w.document.dispatchEvent(new w.KeyboardEvent('keydown',
       { key: 't', code: 'KeyT', ctrlKey: true, bubbles: true }));
     const modal = w.document.querySelector('.llmtr-modal');
     assert.ok(modal, 'setup modal should open when no key is saved');
     const [url, model] = [...modal.querySelectorAll('input')].slice(1, 3);
-    return probe({ w, modal, sel: modal.querySelector('select'), url, model });
+    return probe({ w, modal, sel: modal.querySelector('select'), url, model, ...ctx });
   });
 
 const suggestions = (modal) =>
@@ -338,4 +339,83 @@ test('Custom leaves the endpoint the user typed alone', async () => {
     return url.value;
   });
   assert.equal(got, 'https://llm.internal.example/v1/chat/completions');
+});
+
+// ---------------------------------------------------------------------------
+// Live OpenRouter catalog
+// ---------------------------------------------------------------------------
+
+// A hardcoded model list rots — this repo already carries LEGACY_MODELS because
+// DeepSeek retired two ids out from under it. OpenRouter serves its catalog
+// unauthenticated, so the suggestions can be the real thing.
+const catalog = (ids) => (opts) => opts.onload &&
+  opts.onload({ responseText: JSON.stringify({ data: ids.map(id => ({ id })) }) });
+
+const LIVE = ['deepseek/deepseek-v4-pro', 'anthropic/claude-opus-4.6', 'zzz/newcomer'];
+
+test('OpenRouter suggestions come from the live catalog', async () => {
+  const got = await openSetup({ xhr: catalog(LIVE) }, ({ modal, sel, requests }) => {
+    sel.value = 'openrouter';
+    sel.onchange();
+    return { models: suggestions(modal), urls: requests.map(r => r.url) };
+  });
+  assert.deepEqual(got.models, [...LIVE].sort());
+  assert.ok(got.urls.includes('https://openrouter.ai/api/v1/models'),
+    `expected a catalog fetch, got ${got.urls}`);
+});
+
+// The catalog is public, so it must not be gated on a key the user has not
+// entered yet — the suggestions matter most on a first run.
+test('the catalog is fetched without sending the API key', async () => {
+  const sent = await openSetup({ xhr: catalog(LIVE) }, ({ sel, requests }) => {
+    sel.value = 'openrouter';
+    sel.onchange();
+    const req = requests.find(r => r.url && r.url.endsWith('/models'));
+    return { method: req.method, headers: req.headers };
+  });
+  assert.equal(sent.method, 'GET');
+  assert.ok(!sent.headers || !('Authorization' in sent.headers),
+    'catalog fetch must not carry credentials');
+});
+
+test('a failed catalog fetch leaves the built-in suggestions in place', async () => {
+  const models = await openSetup(
+    { xhr: (opts) => opts.onerror && opts.onerror({}) },
+    ({ modal, sel }) => { sel.value = 'openrouter'; sel.onchange(); return suggestions(modal); });
+  assert.ok(models.length, 'fallback list should survive a dead network');
+  assert.ok(models.every(m => m.includes('/')), `expected namespaced ids, got ${models}`);
+});
+
+test('a malformed catalog response leaves the built-in suggestions in place', async () => {
+  const models = await openSetup(
+    { xhr: (opts) => opts.onload && opts.onload({ responseText: 'not json' }) },
+    ({ modal, sel }) => { sel.value = 'openrouter'; sel.onchange(); return suggestions(modal); });
+  assert.ok(models.length && models.every(m => m.includes('/')));
+});
+
+test('the catalog is cached rather than refetched on every open', async () => {
+  const got = await openSetup({ xhr: catalog(LIVE) }, ({ sel, gm, requests }) => {
+    sel.value = 'openrouter'; sel.onchange();
+    sel.value = 'deepseek';   sel.onchange();
+    sel.value = 'openrouter'; sel.onchange();
+    return { fetches: requests.filter(r => r.url && r.url.endsWith('/models')).length,
+             cached: JSON.parse(gm.OR_MODELS_CACHE || '{}').ids };
+  });
+  assert.deepEqual(got.cached, [...LIVE].sort(), 'catalog should be written to storage');
+  assert.equal(got.fetches, 1, 'second visit should be served from cache');
+});
+
+// The fetch is async in the browser; the user may have moved on by the time it
+// lands, and it must not overwrite the provider now on screen.
+let late; // released by the test below once it has switched providers
+test('a late catalog response does not clobber another provider', async () => {
+  const models = await openSetup(
+    { xhr: (opts) => { late = () => opts.onload({ responseText: JSON.stringify({ data: LIVE.map(id => ({ id })) }) }); } },
+    ({ modal, sel }) => {
+      sel.value = 'openrouter'; sel.onchange();   // fetch starts, held open
+      sel.value = 'deepseek';   sel.onchange();   // user moves on
+      late();                                     // ...and only now does it land
+      return suggestions(modal);
+    });
+  assert.ok(models.every(m => !m.includes('/')), `expected DeepSeek ids, got ${models}`);
 });

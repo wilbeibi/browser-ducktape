@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.9.0
+// @version      1.10.0
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -70,6 +70,48 @@
         { id: 'custom', name: 'Custom (OpenAI-compatible)', url: '', models: [] },
     ];
     const CUSTOM_PROVIDER = PROVIDERS[PROVIDERS.length - 1];
+
+    // OpenRouter publishes its catalog unauthenticated, so the suggestions can be
+    // the live list rather than a snapshot that rots — which a hardcoded list
+    // does: this repo already carries LEGACY_MODELS because DeepSeek retired two
+    // ids out from under it. The ids above stay as the offline fallback, for a
+    // failed fetch and for the moment before the first one returns.
+    //
+    // Cached because the response is ~700KB, which is rude to re-download every
+    // time the modal opens, and the catalog moves on the order of days.
+    const OR_MODELS_URL = 'https://openrouter.ai/api/v1/models';
+    const OR_MODELS_KEY = 'OR_MODELS_CACHE';
+    const OR_MODELS_TTL = 24 * 60 * 60 * 1000;
+
+    function cachedModels() {
+        try {
+            const c = JSON.parse(GM_getValue(OR_MODELS_KEY, '') || 'null');
+            if (c && Array.isArray(c.ids) && c.ids.length) return c;
+        } catch (e) { /* corrupt cache is the same as no cache */ }
+        return null;
+    }
+
+    // Calls back with the best list available now, and again if a fetch improves
+    // on it. Never reports failure: the field is free text and the fallback is
+    // already on screen, so a dead network costs the user nothing.
+    function openRouterModels(onList) {
+        const cached = cachedModels();
+        if (cached) onList(cached.ids);
+        if (cached && Date.now() - cached.at < OR_MODELS_TTL) return;
+        GM_xmlhttpRequest({
+            method: 'GET', url: OR_MODELS_URL, timeout: 15000,
+            onload(resp) {
+                try {
+                    const ids = (JSON.parse(resp.responseText).data || [])
+                        .map(m => m && m.id).filter(Boolean).sort();
+                    if (!ids.length) return;
+                    GM_setValue(OR_MODELS_KEY, JSON.stringify({ at: Date.now(), ids }));
+                    onList(ids);
+                } catch (e) { /* keep whatever is on screen */ }
+            },
+            onerror() {}, ontimeout() {},
+        });
+    }
 
     // Match on host, not the whole string: a saved URL may differ in path or
     // trailing slash and still be the same service.
@@ -1422,15 +1464,26 @@ html.llmtr-hide .llmtr { display: none; }
         modal.appendChild(modelList);
         modelInput.setAttribute('list', modelList.id);
 
-        function applyProvider(prov, fillUrl) {
-            if (fillUrl && prov.url) urlInput.value = prov.url;
+        function setSuggestions(ids) {
+            if (!modelList.isConnected) return; // modal closed while fetching
             modelList.textContent = '';
-            for (const m of prov.models) {
+            for (const m of ids) {
                 const opt = document.createElement('option');
                 opt.value = m;
                 modelList.appendChild(opt);
             }
+        }
+
+        function applyProvider(prov, fillUrl) {
+            if (fillUrl && prov.url) urlInput.value = prov.url;
+            setSuggestions(prov.models);
             modelInput.placeholder = prov.models[0] || DEFAULT_MODEL;
+            if (prov.id !== 'openrouter') return;
+            // Ask OpenRouter what it actually serves; ignore an answer that
+            // arrives after the user has moved on to another provider.
+            openRouterModels(ids => {
+                if (provSelect.value === 'openrouter') setSuggestions(ids);
+            });
         }
 
         const status = document.createElement('div');
