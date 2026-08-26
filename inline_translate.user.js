@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.8.0
+// @version      1.8.1
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -38,9 +38,23 @@
 
     // The v4 line thinks by default. Translation wants tokens on the page, not on
     // a chain of thought, and the reasoning stream would stall the progressive
-    // render — so opt out. Scoped to deepseek-v* because OpenAI and most
+    // render — so opt out.
+    // The knob is not standardized: DeepSeek's own API takes `thinking`,
+    // OpenRouter takes `reasoning`. Both stay scoped, because OpenAI and most
     // OpenAI-compatible servers 400 on unknown top-level body fields.
-    const thinkingOpts = m => /^deepseek-v\d/i.test(m) ? { thinking: { type: 'disabled' } } : {};
+    //
+    // Route OpenRouter on the endpoint, not the model id: its ids are namespaced
+    // ('deepseek/deepseek-v4-pro'), so the deepseek-v* test never fires there and
+    // the opt-out was silently skipped for every model behind it. `exclude` is
+    // the one reasoning option OpenRouter documents for all models — it keeps the
+    // chain of thought out of the response, though the model may still bill for
+    // the tokens it spent on it.
+    const isOpenRouter = u => {
+        try { return /(^|\.)openrouter\.ai$/i.test(new URL(u).hostname); } catch { return false; }
+    };
+    const thinkingOpts = (m, url) =>
+        isOpenRouter(url)              ? { reasoning: { exclude: true } } :
+        /^deepseek-v\d/i.test(m || '') ? { thinking: { type: 'disabled' } } : {};
 
     const MIN_TEXT_LEN       = 4;     // skip blocks shorter than this
     const MAX_SEGMENT_CHARS  = 4000;  // hard cap per block
@@ -786,7 +800,7 @@ html.llmtr-hide .llmtr { display: none; }
                 method: 'POST', url,
                 headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
                 timeout,
-                data: JSON.stringify({ model, max_tokens, temperature: 0.3, messages, ...thinkingOpts(model) }),
+                data: JSON.stringify({ model, max_tokens, temperature: 0.3, messages, ...thinkingOpts(model, url) }),
                 onload(resp) {
                     try {
                         const data = JSON.parse(resp.responseText);
@@ -835,7 +849,7 @@ html.llmtr-hide .llmtr { display: none; }
                     'Accept': 'text/event-stream'
                 },
                 timeout,
-                data: JSON.stringify({ model, max_tokens, temperature: 0.3, messages, stream: true, ...thinkingOpts(model) }),
+                data: JSON.stringify({ model, max_tokens, temperature: 0.3, messages, stream: true, ...thinkingOpts(model, url) }),
                 onprogress(resp) {
                     if (!onText) return;
                     try {

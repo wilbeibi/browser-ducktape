@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Hover Link Verdict
-// @version      0.5.2
+// @version      0.5.3
 // @description  Hover a link, get a fast "should I click this?" verdict. Instant URL layer -> direct fetch -> Reader fallback -> gated LLM one-liner. No screenshots. LLM via any OpenAI-compatible endpoint (DeepSeek by default), configured the same way as the inline translator.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -163,9 +163,24 @@ const core = (() => {
 
   // The v4 line thinks by default, and this whole script is a race against a 9s
   // timeout for a 70-token one-liner — a chain of thought is exactly what we
-  // cannot afford. Scoped to deepseek-v* because OpenAI and most
+  // cannot afford.
+  //
+  // The knob is not standardized: DeepSeek's own API takes `thinking`,
+  // OpenRouter takes `reasoning`. Both stay scoped, because OpenAI and most
   // OpenAI-compatible servers 400 on unknown top-level body fields.
-  function thinkingOpts(model) {
+  //
+  // Route OpenRouter on the endpoint, not the model id: its ids are namespaced
+  // ('deepseek/deepseek-v4-pro'), so the deepseek-v* test never fires there and
+  // the opt-out was silently skipped for every model behind it. `exclude` is the
+  // one reasoning option OpenRouter documents for all models — it keeps the chain
+  // of thought out of the response, though the model may still bill for the
+  // tokens it spent on it.
+  function isOpenRouter(url) {
+    try { return /(^|\.)openrouter\.ai$/i.test(new URL(url).hostname); } catch { return false; }
+  }
+
+  function thinkingOpts(model, url) {
+    if (isOpenRouter(url)) return { reasoning: { exclude: true } };
     return /^deepseek-v\d/i.test(model || '') ? { thinking: { type: 'disabled' } } : {};
   }
 
@@ -609,7 +624,7 @@ if (typeof module !== 'undefined' && module.exports) {
     if(!text || !cfg.key) return Promise.reject(new Error('no body / no key'));
     const body = core.buildVerdictPrompt(url, text);
     body.model = cfg.model;
-    Object.assign(body, core.thinkingOpts(cfg.model));
+    Object.assign(body, core.thinkingOpts(cfg.model, cfg.url));
     return new Promise((res,rej)=>{
       GM_xmlhttpRequest({
         method:'POST', url:cfg.url, timeout:9000,
@@ -798,7 +813,7 @@ if (typeof module !== 'undefined' && module.exports) {
       GM_xmlhttpRequest({
         method:'POST', url:v.url, timeout:15000,
         headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+v.key },
-        data: JSON.stringify({ model:v.model, max_tokens:8, messages:[{role:'user',content:'hi'}], ...core.thinkingOpts(v.model) }),
+        data: JSON.stringify({ model:v.model, max_tokens:8, messages:[{role:'user',content:'hi'}], ...core.thinkingOpts(v.model, v.url) }),
         onload:r=>{
           let ok=r.status>=200&&r.status<300, msg='HTTP '+r.status;
           try{ const d=JSON.parse(r.responseText); if(!ok) msg=d?.error?.message||msg; }catch(e){}

@@ -192,6 +192,28 @@ test('thinkingOpts disables thinking for deepseek v-series only', () => {
   assert.deepEqual(core.thinkingOpts('llama3.1:8b'), {});
   assert.deepEqual(core.thinkingOpts(''), {});
   assert.deepEqual(core.thinkingOpts(null), {});
+  // no endpoint known: fall back to judging by model id alone
+  assert.deepEqual(core.thinkingOpts('deepseek-v4-pro', undefined), { thinking: { type: 'disabled' } });
+  assert.deepEqual(core.thinkingOpts('deepseek-v4-pro', 'not a url'), { thinking: { type: 'disabled' } });
+});
+
+// OpenRouter speaks `reasoning`, not `thinking`, and namespaces its model ids —
+// so the deepseek-v* test never fires there and the opt-out was silently skipped
+// for every model behind it. Route on the endpoint instead.
+test('thinkingOpts uses the OpenRouter dialect for OpenRouter endpoints', () => {
+  const OR = 'https://openrouter.ai/api/v1/chat/completions';
+  assert.deepEqual(core.thinkingOpts('deepseek/deepseek-v4-pro', OR), { reasoning: { exclude: true } });
+  assert.deepEqual(core.thinkingOpts('anthropic/claude-sonnet-4.5', OR), { reasoning: { exclude: true } });
+  // a bare deepseek id pointed at OpenRouter still gets OpenRouter's dialect
+  assert.deepEqual(core.thinkingOpts('deepseek-v4-pro', OR), { reasoning: { exclude: true } });
+});
+
+test('thinkingOpts does not mistake a lookalike host for OpenRouter', () => {
+  // substring matching would send `reasoning` to a server that 400s on it
+  assert.deepEqual(core.thinkingOpts('gpt-4o-mini', 'https://openrouter.ai.evil.test/v1/chat/completions'), {});
+  assert.deepEqual(core.thinkingOpts('gpt-4o-mini', 'https://api.example.com/?ref=openrouter.ai'), {});
+  // ...but a subdomain of the real thing is still OpenRouter
+  assert.deepEqual(core.thinkingOpts('x/y', 'https://api.openrouter.ai/v1/chat/completions'), { reasoning: { exclude: true } });
 });
 
 test('compactText collapses whitespace and trims', () => {

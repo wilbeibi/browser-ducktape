@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Prompt Enhancer
-// @version      4.2.1
+// @version      4.2.2
 // @description  One-click prompt enhancement for AI chat interfaces
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -39,9 +39,22 @@
 
     // The v4 line thinks by default. A rewrite is one short pass over the draft;
     // a chain of thought only adds latency to a button the user is waiting on.
-    // Scoped to deepseek-v* because OpenAI and most OpenAI-compatible servers 400
-    // on unknown top-level body fields.
-    const thinkingOpts = m => /^deepseek-v\d/i.test(m) ? { thinking: { type: 'disabled' } } : {};
+    // The knob is not standardized: DeepSeek's own API takes `thinking`,
+    // OpenRouter takes `reasoning`. Both stay scoped, because OpenAI and most
+    // OpenAI-compatible servers 400 on unknown top-level body fields.
+    //
+    // Route OpenRouter on the endpoint, not the model id: its ids are namespaced
+    // ('deepseek/deepseek-v4-pro'), so the deepseek-v* test never fires there and
+    // the opt-out was silently skipped for every model behind it. `exclude` is
+    // the one reasoning option OpenRouter documents for all models — it keeps the
+    // chain of thought out of the response, though the model may still bill for
+    // the tokens it spent on it.
+    const isOpenRouter = u => {
+        try { return /(^|\.)openrouter\.ai$/i.test(new URL(u).hostname); } catch { return false; }
+    };
+    const thinkingOpts = (m, url) =>
+        isOpenRouter(url)              ? { reasoning: { exclude: true } } :
+        /^deepseek-v\d/i.test(m || '') ? { thinking: { type: 'disabled' } } : {};
 
     function getConfig() {
         return {
@@ -392,7 +405,7 @@ Return ONLY the enhanced prompt, nothing else.`;
                 method: 'POST', url,
                 headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
                 timeout,
-                data: JSON.stringify({ model, max_tokens, messages, ...thinkingOpts(model) }),
+                data: JSON.stringify({ model, max_tokens, messages, ...thinkingOpts(model, url) }),
                 onload(resp) {
                     try {
                         const data = JSON.parse(resp.responseText);
