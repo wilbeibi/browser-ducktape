@@ -544,6 +544,44 @@ test('a selected English word shows authoritative IPA and reuses the cached look
   assert.equal(got.lookups, 1, 'a repeated word should use the saved pronunciation');
 });
 
+test('a Collegiate key falls back when the Learner\'s endpoint rejects it', async () => {
+  const got = await runScript('<p id="lookup-word">apple</p>', {
+    mwKey: 'collegiate-key',
+    xhr: (opts) => {
+      if (opts.url.includes('/learners/')) {
+        opts.onload({ status: 403, responseText: 'invalid key' });
+      } else if (opts.url.includes('/collegiate/')) {
+        opts.onload({ status: 200, responseText: JSON.stringify([{
+          hwi: { prs: [{ ipa: 'ˈæpəl', sound: { audio: 'apple001' } }] },
+        }]) });
+      }
+    },
+  }, async (w, { requests }) => {
+    await selectWordAndTranslate(w);
+    await Promise.resolve();
+    return {
+      pronunciation: w.document.querySelector('.llmtr-sel-pronunciation').textContent,
+      lookups: requests.filter(r => r.url.includes('dictionaryapi.com')).map(r => r.url),
+    };
+  });
+  assert.equal(got.pronunciation, 'apple/ˈæpəl/Play');
+  assert.equal(got.lookups.length, 2);
+  assert.match(got.lookups[0], /\/learners\//);
+  assert.match(got.lookups[1], /\/collegiate\//);
+});
+
+test('a failed pronunciation lookup explains the missing feature', async () => {
+  const text = await runScript('<p id="lookup-word">apple</p>', {
+    mwKey: 'bad-key',
+    xhr: (opts) => opts.onload({ status: 403, responseText: 'invalid key' }),
+  }, async (w) => {
+    await selectWordAndTranslate(w);
+    await new Promise(resolve => w.setTimeout(resolve, 0));
+    return w.document.querySelector('.llmtr-sel-pronunciation').textContent;
+  });
+  assert.equal(text, 'applePronunciation unavailable');
+});
+
 test('settings retain a separate optional Merriam-Webster key', async () => {
   const saved = await runScript(`<article>${`<p>${PARA}</p>`.repeat(4)}</article>`, {},
     (w, { gm }) => {

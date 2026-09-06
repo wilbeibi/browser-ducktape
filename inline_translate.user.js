@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.11.1
+// @version      1.11.2
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -1735,10 +1735,13 @@ html.llmtr-hide .llmtr { display: none; }
     }
 
     // The translation model is deliberately never asked to invent a
-    // pronunciation. Merriam-Webster's learner dictionary returns its IPA and,
-    // when available, a recording from the same entry.
+    // pronunciation. Merriam-Webster's Learner's and Collegiate dictionaries
+    // return IPA and, when available, a recording from the same entry. Keys are
+    // issued per product, so try both rather than making setup depend on a
+    // particular registration choice.
     const pronunciationInFlight = new Map();
     let pronunciationAudioContext = null;
+    const MW_DICTIONARIES = ['learners', 'collegiate'];
 
     function pronunciationWord(text) {
         const word = String(text || '').trim().replace(/’/g, "'");
@@ -1780,41 +1783,58 @@ html.llmtr-hide .llmtr { display: none; }
         if (cached) return Promise.resolve(cached);
         if (pronunciationInFlight.has(word)) return pronunciationInFlight.get(word);
 
-        const request = new Promise((resolve, reject) => {
-            const url = 'https://www.dictionaryapi.com/api/v3/references/learners/json/' +
-                encodeURIComponent(word) + '?key=' + encodeURIComponent(key);
-            GM_xmlhttpRequest({
-                method: 'GET', url, timeout: 2500,
-                headers: { Accept: 'application/json' },
-                onload(resp) {
-                    if (resp.status < 200 || resp.status >= 300) {
-                        reject(new Error('Pronunciation lookup failed'));
-                        return;
-                    }
-                    try {
-                        const entries = JSON.parse(resp.responseText || '[]');
-                        let pronunciation = null;
-                        for (const entry of entries) {
-                            const options = entry && entry.hwi && entry.hwi.prs;
-                            if (!Array.isArray(options)) continue;
-                            const match = options.find(p => p && p.ipa);
-                            if (!match) continue;
-                            pronunciation = {
-                                ipa: '/' + match.ipa + '/',
-                                audio: merriamWebsterAudioUrl(match.sound && match.sound.audio),
-                            };
-                            break;
+        function lookupInDictionary(dictionary) {
+            return new Promise((resolve, reject) => {
+                const url = 'https://www.dictionaryapi.com/api/v3/references/' + dictionary +
+                    '/json/' + encodeURIComponent(word) + '?key=' + encodeURIComponent(key);
+                GM_xmlhttpRequest({
+                    method: 'GET', url, timeout: 2500,
+                    headers: { Accept: 'application/json' },
+                    onload(resp) {
+                        if (resp.status < 200 || resp.status >= 300) {
+                            reject(new Error('Pronunciation lookup failed'));
+                            return;
                         }
-                        if (pronunciation) cachePronunciation(word, pronunciation);
-                        resolve(pronunciation);
-                    } catch (e) {
-                        reject(new Error('Failed to parse pronunciation'));
-                    }
-                },
-                onerror: () => reject(new Error('Pronunciation lookup failed')),
-                ontimeout: () => reject(new Error('Pronunciation lookup timed out')),
+                        try {
+                            const entries = JSON.parse(resp.responseText || '[]');
+                            let pronunciation = null;
+                            for (const entry of entries) {
+                                const options = entry && entry.hwi && entry.hwi.prs;
+                                if (!Array.isArray(options)) continue;
+                                const match = options.find(p => p && p.ipa);
+                                if (!match) continue;
+                                pronunciation = {
+                                    ipa: '/' + match.ipa + '/',
+                                    audio: merriamWebsterAudioUrl(match.sound && match.sound.audio),
+                                };
+                                break;
+                            }
+                            resolve(pronunciation);
+                        } catch (e) {
+                            reject(new Error('Failed to parse pronunciation'));
+                        }
+                    },
+                    onerror: () => reject(new Error('Pronunciation lookup failed')),
+                    ontimeout: () => reject(new Error('Pronunciation lookup timed out')),
+                });
             });
-        });
+        }
+
+        const request = (async () => {
+            let lastError;
+            for (const dictionary of MW_DICTIONARIES) {
+                try {
+                    const pronunciation = await lookupInDictionary(dictionary);
+                    if (pronunciation) {
+                        cachePronunciation(word, pronunciation);
+                        return pronunciation;
+                    }
+                } catch (error) {
+                    lastError = error;
+                }
+            }
+            throw lastError || new Error('No pronunciation found');
+        })();
         pronunciationInFlight.set(word, request);
         request.finally(() => pronunciationInFlight.delete(word)).catch(() => {});
         return request;
@@ -1968,6 +1988,15 @@ Rules:
         line.appendChild(play);
     }
 
+    function renderPronunciationUnavailable(popup, word) {
+        const line = popup && popup._pronunciation;
+        if (!line) return;
+        line.replaceChildren();
+        line.hidden = false;
+        appendText(line, 'llmtr-sel-headword', word);
+        appendText(line, 'llmtr-sel-ipa', 'Pronunciation unavailable');
+    }
+
     function loadPronunciation(popup, word, key) {
         const lookupWord = pronunciationWord(word);
         if (!lookupWord || !key) return;
@@ -1976,7 +2005,11 @@ Rules:
             if (selPop !== popup || !popup.isConnected) return;
             renderPronunciation(popup, word, pronunciation);
             repositionSelUI();
-        }).catch(() => {}); // A pronunciation must never make translation look broken.
+        }).catch(() => {
+            // Translation remains usable, but do not make a bad API key look like
+            // a missing feature. Both supported Merriam-Webster products were tried.
+            if (selPop === popup && popup.isConnected) renderPronunciationUnavailable(popup, word);
+        });
     }
 
     // Typeset the dictionary-style answer (macOS 词典-look): bold headword,
