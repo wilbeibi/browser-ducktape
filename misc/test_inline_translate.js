@@ -570,16 +570,31 @@ test('a Collegiate key falls back when the Learner\'s endpoint rejects it', asyn
   assert.match(got.lookups[1], /\/collegiate\//);
 });
 
-test('a failed pronunciation lookup explains the missing feature', async () => {
-  const text = await runScript('<p id="lookup-word">apple</p>', {
+test('a failed dictionary lookup offers system speech for an unlisted word', async () => {
+  const got = await runScript('<p id="lookup-word">astra</p>', {
     mwKey: 'bad-key',
     xhr: (opts) => opts.onload({ status: 403, responseText: 'invalid key' }),
   }, async (w) => {
+    let spoken = null;
+    let cancelled = false;
+    w.SpeechSynthesisUtterance = class {
+      constructor(text) { this.text = text; }
+    };
+    w.speechSynthesis = {
+      cancel() { cancelled = true; },
+      speak(utterance) { spoken = utterance; },
+    };
     await selectWordAndTranslate(w);
     await new Promise(resolve => w.setTimeout(resolve, 0));
-    return w.document.querySelector('.llmtr-sel-pronunciation').textContent;
+    const line = w.document.querySelector('.llmtr-sel-pronunciation');
+    line.querySelector('button[aria-label="Speak astra with system voice"]').click();
+    return { text: line.textContent, cancelled, spoken };
   });
-  assert.equal(text, 'applePronunciation unavailable');
+  assert.equal(got.text, 'astraPronunciation unavailableSpeak');
+  assert.equal(got.cancelled, true);
+  assert.equal(got.spoken.text, 'astra');
+  assert.equal(got.spoken.lang, 'en-US');
+  assert.equal(got.spoken.rate, 0.9);
 });
 
 test('settings retain a separate optional Merriam-Webster key', async () => {

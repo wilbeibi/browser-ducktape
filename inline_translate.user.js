@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.11.2
+// @version      1.11.3
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -1875,6 +1875,24 @@ html.llmtr-hide .llmtr { display: none; }
         }
     }
 
+    function playSystemPronunciation(word) {
+        const synth = window.speechSynthesis;
+        const Utterance = window.SpeechSynthesisUtterance;
+        if (!synth || typeof synth.speak !== 'function' || typeof Utterance !== 'function') {
+            showToast('System speech is not supported', 'error');
+            return;
+        }
+        try {
+            synth.cancel();
+            const utterance = new Utterance(word);
+            utterance.lang = 'en-US';
+            utterance.rate = 0.9;
+            synth.speak(utterance);
+        } catch (err) {
+            showToast('Could not speak pronunciation', 'error');
+        }
+    }
+
     function selectionTranslatePrompt(lang) {
         return `You are a professional translation engine. Translate the user's text into ${lang}.
 
@@ -1972,18 +1990,17 @@ Rules:
         line.hidden = false;
         appendText(line, 'llmtr-sel-headword', word);
         appendText(line, 'llmtr-sel-ipa', pronunciation.ipa);
-        if (!pronunciation.audio) return;
-
         const play = document.createElement('button');
         play.className = 'llmtr-sel-play';
         play.type = 'button';
-        play.textContent = 'Play';
+        play.textContent = pronunciation.audio ? 'Play' : 'Speak';
         play.title = 'Play pronunciation';
         play.setAttribute('aria-label', 'Play pronunciation for ' + word);
         play.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            playPronunciation(pronunciation.audio);
+            if (pronunciation.audio) playPronunciation(pronunciation.audio);
+            else playSystemPronunciation(word);
         });
         line.appendChild(play);
     }
@@ -1995,6 +2012,18 @@ Rules:
         line.hidden = false;
         appendText(line, 'llmtr-sel-headword', word);
         appendText(line, 'llmtr-sel-ipa', 'Pronunciation unavailable');
+        const speak = document.createElement('button');
+        speak.className = 'llmtr-sel-play';
+        speak.type = 'button';
+        speak.textContent = 'Speak';
+        speak.title = 'Speak with system voice';
+        speak.setAttribute('aria-label', 'Speak ' + word + ' with system voice');
+        speak.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            playSystemPronunciation(word);
+        });
+        line.appendChild(speak);
     }
 
     function loadPronunciation(popup, word, key) {
