@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.11.4
+// @version      1.11.5
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -2011,7 +2011,6 @@ Rules:
         line.replaceChildren();
         line.hidden = false;
         appendText(line, 'llmtr-sel-headword', word);
-        appendText(line, 'llmtr-sel-ipa', 'Pronunciation unavailable');
         const speak = document.createElement('button');
         speak.className = 'llmtr-sel-play';
         speak.type = 'button';

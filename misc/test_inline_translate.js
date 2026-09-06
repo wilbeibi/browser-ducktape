@@ -590,7 +590,7 @@ test('a failed dictionary lookup offers system speech for an unlisted word', asy
     line.querySelector('button[aria-label="Speak astra with system voice"]').click();
     return { text: line.textContent, cancelled, spoken };
   });
-  assert.equal(got.text, 'astraPronunciation unavailable🔊');
+  assert.equal(got.text, 'astra🔊');
   assert.equal(got.cancelled, true);
   assert.equal(got.spoken.text, 'astra');
   assert.equal(got.spoken.lang, 'en-US');
