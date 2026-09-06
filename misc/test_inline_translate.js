@@ -472,7 +472,14 @@ test('a late catalog response does not clobber another provider', async () => {
 // Merriam-Webster pronunciation
 // ---------------------------------------------------------------------------
 
-const pause = (w, ms = 15) => new Promise(resolve => w.setTimeout(resolve, ms));
+async function waitForElement(w, selector) {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const el = w.document.querySelector(selector);
+    if (el) return el;
+    await new Promise(resolve => w.setTimeout(resolve, 10));
+  }
+  return null;
+}
 
 async function selectWordAndTranslate(w) {
   w.Range.prototype.getBoundingClientRect = () => ({
@@ -485,10 +492,10 @@ async function selectWordAndTranslate(w) {
   selection.removeAllRanges();
   selection.addRange(range);
   w.document.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true }));
-  await pause(w);
-  assert.ok(w.document.querySelector('.llmtr-sel-btn'), 'selection should offer translation');
-  w.document.querySelector('.llmtr-sel-btn').click();
-  await pause(w, 0);
+  const button = await waitForElement(w, '.llmtr-sel-btn');
+  assert.ok(button, 'selection should offer translation');
+  button.click();
+  await Promise.resolve();
 }
 
 test('a selected English word shows authoritative IPA and reuses the cached lookup', async () => {
@@ -499,20 +506,32 @@ test('a selected English word shows authoritative IPA and reuses the cached look
         opts.onload({ status: 200, responseText: JSON.stringify([{
           hwi: { prs: [{ ipa: 'ˈæpəl', sound: { audio: 'apple001' } }] },
         }]) });
+      } else if (opts.url.includes('media.merriam-webster.com')) {
+        opts.onload({ status: 200, response: new ArrayBuffer(8) });
       }
     },
   }, async (w, { requests }) => {
-    let played = '';
-    w.Audio = class {
-      constructor(url) { played = url; }
-      play() { return Promise.resolve(); }
+    let decoded = null;
+    let started = false;
+    w.AudioContext = class {
+      constructor() { this.destination = {}; this.state = 'running'; }
+      resume() { return Promise.resolve(); }
+      decodeAudioData(bytes) { decoded = bytes; return Promise.resolve({}); }
+      createBufferSource() {
+        return { connect() {}, start() { started = true; } };
+      }
     };
     await selectWordAndTranslate(w);
     const first = w.document.querySelector('.llmtr-sel-pronunciation');
     assert.equal(first.textContent, 'apple/ˈæpəl/Play');
     first.querySelector('button[aria-label="Play pronunciation for apple"]').click();
-    assert.equal(played,
+    await Promise.resolve();
+    const audioRequest = requests.find(r => r.url.includes('media.merriam-webster.com'));
+    assert.equal(audioRequest.url,
       'https://media.merriam-webster.com/audio/prons/en/us/mp3/a/apple001.mp3');
+    assert.equal(audioRequest.responseType, 'arraybuffer');
+    assert.equal(decoded.byteLength, 8);
+    assert.equal(started, true, 'downloaded audio should begin playback');
 
     w.document.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true }));
     await selectWordAndTranslate(w);

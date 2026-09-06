@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.11.0
+// @version      1.11.1
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -1738,6 +1738,7 @@ html.llmtr-hide .llmtr { display: none; }
     // pronunciation. Merriam-Webster's learner dictionary returns its IPA and,
     // when available, a recording from the same entry.
     const pronunciationInFlight = new Map();
+    let pronunciationAudioContext = null;
 
     function pronunciationWord(text) {
         const word = String(text || '').trim().replace(/’/g, "'");
@@ -1817,6 +1818,41 @@ html.llmtr-hide .llmtr { display: none; }
         pronunciationInFlight.set(word, request);
         request.finally(() => pronunciationInFlight.delete(word)).catch(() => {});
         return request;
+    }
+
+    // Fetch the bytes through the userscript manager, then decode them locally.
+    // An <audio src="https://…"> belongs to the page and can be rejected by a
+    // site's media-src CSP even though the dictionary lookup itself was allowed.
+    function playPronunciation(audioUrl) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContext) { showToast('Audio playback is not supported', 'error'); return; }
+        try {
+            if (!pronunciationAudioContext) pronunciationAudioContext = new AudioContext();
+            const context = pronunciationAudioContext;
+            if (context.state === 'suspended') context.resume().catch(() => {});
+            GM_xmlhttpRequest({
+                method: 'GET', url: audioUrl, responseType: 'arraybuffer', timeout: 10000,
+                onload(resp) {
+                    const bytes = resp.response;
+                    if (resp.status < 200 || resp.status >= 300 || !bytes || !bytes.byteLength) {
+                        showToast('Could not play pronunciation', 'error');
+                        return;
+                    }
+                    // slice gives decodeAudioData an owned buffer in every engine.
+                    const data = bytes.slice ? bytes.slice(0) : bytes;
+                    context.decodeAudioData(data).then((buffer) => {
+                        const source = context.createBufferSource();
+                        source.buffer = buffer;
+                        source.connect(context.destination);
+                        source.start(0);
+                    }).catch(() => showToast('Could not play pronunciation', 'error'));
+                },
+                onerror: () => showToast('Could not play pronunciation', 'error'),
+                ontimeout: () => showToast('Could not play pronunciation', 'error'),
+            });
+        } catch (err) {
+            showToast('Could not play pronunciation', 'error');
+        }
     }
 
     function selectionTranslatePrompt(lang) {
@@ -1927,12 +1963,7 @@ Rules:
         play.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            try {
-                const audio = new window.Audio(pronunciation.audio);
-                audio.play().catch(() => showToast('Could not play pronunciation', 'error'));
-            } catch (err) {
-                showToast('Could not play pronunciation', 'error');
-            }
+            playPronunciation(pronunciation.audio);
         });
         line.appendChild(play);
     }
