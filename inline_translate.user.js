@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.11.3
+// @version      1.11.4
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -465,7 +465,7 @@ html.llmtr-hide .llmtr { display: none; }
     padding: 1px 4px;
     background: transparent;
     color: #5c5cff;
-    font: inherit;
+    font: 14px/1 sans-serif;
     cursor: pointer;
 }
 .llmtr-sel-play:hover { background: rgba(92,92,255,0.1); }
@@ -1993,8 +1993,8 @@ Rules:
         const play = document.createElement('button');
         play.className = 'llmtr-sel-play';
         play.type = 'button';
-        play.textContent = pronunciation.audio ? 'Play' : 'Speak';
-        play.title = 'Play pronunciation';
+        play.textContent = '🔊';
+        play.title = pronunciation.audio ? 'Play pronunciation' : 'Speak with system voice';
         play.setAttribute('aria-label', 'Play pronunciation for ' + word);
         play.addEventListener('click', (e) => {
             e.preventDefault();
@@ -2015,7 +2015,7 @@ Rules:
         const speak = document.createElement('button');
         speak.className = 'llmtr-sel-play';
         speak.type = 'button';
-        speak.textContent = 'Speak';
+        speak.textContent = '🔊';
         speak.title = 'Speak with system voice';
         speak.setAttribute('aria-label', 'Speak ' + word + ' with system voice');
         speak.addEventListener('click', (e) => {

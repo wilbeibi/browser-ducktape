@@ -523,7 +523,7 @@ test('a selected English word shows authoritative IPA and reuses the cached look
     };
     await selectWordAndTranslate(w);
     const first = w.document.querySelector('.llmtr-sel-pronunciation');
-    assert.equal(first.textContent, 'apple/ˈæpəl/Play');
+    assert.equal(first.textContent, 'apple/ˈæpəl/🔊');
     first.querySelector('button[aria-label="Play pronunciation for apple"]').click();
     await Promise.resolve();
     const audioRequest = requests.find(r => r.url.includes('media.merriam-webster.com'));
@@ -540,7 +540,7 @@ test('a selected English word shows authoritative IPA and reuses the cached look
       lookups: requests.filter(r => r.url.includes('dictionaryapi.com')).length,
     };
   });
-  assert.equal(got.pronunciation, 'apple/ˈæpəl/Play');
+  assert.equal(got.pronunciation, 'apple/ˈæpəl/🔊');
   assert.equal(got.lookups, 1, 'a repeated word should use the saved pronunciation');
 });
 
@@ -564,7 +564,7 @@ test('a Collegiate key falls back when the Learner\'s endpoint rejects it', asyn
       lookups: requests.filter(r => r.url.includes('dictionaryapi.com')).map(r => r.url),
     };
   });
-  assert.equal(got.pronunciation, 'apple/ˈæpəl/Play');
+  assert.equal(got.pronunciation, 'apple/ˈæpəl/🔊');
   assert.equal(got.lookups.length, 2);
   assert.match(got.lookups[0], /\/learners\//);
   assert.match(got.lookups[1], /\/collegiate\//);
@@ -590,7 +590,7 @@ test('a failed dictionary lookup offers system speech for an unlisted word', asy
     line.querySelector('button[aria-label="Speak astra with system voice"]').click();
     return { text: line.textContent, cancelled, spoken };
   });
-  assert.equal(got.text, 'astraPronunciation unavailableSpeak');
+  assert.equal(got.text, 'astraPronunciation unavailable🔊');
   assert.equal(got.cancelled, true);
   assert.equal(got.spoken.text, 'astra');
   assert.equal(got.spoken.lang, 'en-US');
