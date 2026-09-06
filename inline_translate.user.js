@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.10.0
+// @version      1.10.1
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -508,10 +508,33 @@ html.llmtr-hide .llmtr { display: none; }
     // ==========================================
     const BLOCK_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI',
         'BLOCKQUOTE', 'DD', 'DT', 'FIGCAPTION', 'TD', 'TH', 'CAPTION', 'SUMMARY']);
-    const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'CODE', 'PRE',
+    const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'CODE', 'PRE',
         'TEXTAREA', 'INPUT', 'SELECT', 'BUTTON', 'IFRAME', 'CANVAS', 'VIDEO',
-        'AUDIO', 'MATH', 'NAV', 'ASIDE', 'FORM', 'KBD', 'SAMP', 'TIME']);
+        'AUDIO', 'NAV', 'ASIDE', 'FORM', 'KBD', 'SAMP', 'TIME']);
     const BLOCKY_SELECTOR = 'p,h1,h2,h3,h4,h5,h6,li,ul,ol,dl,blockquote,div,section,article,table,figure,pre';
+
+    // 'SVG' and 'MATH' used to sit in SKIP_TAGS and never matched anything:
+    // tagName only uppercases for HTML-namespace elements, so an <svg>/<math>
+    // inside an HTML document reports 'svg'/'math'. Test the namespace instead
+    // — it covers the whole foreign subtree, where MathML's <mtext> nodes
+    // ('reward', 'efficiency penalty') look exactly like translatable leaves
+    // and its <annotation> carries the raw LaTeX source.
+    const HTML_NS = 'http://www.w3.org/1999/xhtml';
+
+    // A typeset formula is markup, not prose. KaTeX and MathJax build one out
+    // of dozens of <span>s that each carry a scrap of text, so a collector that
+    // walks in translates a formula one glyph cluster at a time and appends the
+    // Chinese into the middle of it — which is what every equation on
+    // turbopuffer.com/blog/large-scale-code-search turned into.
+    const MATH_SELECTOR = '.katex, .katex-display, .MathJax, .MathJax_Preview, mjx-container, math';
+
+    // Not prose: chrome and code by tag, foreign markup by namespace, formulas
+    // by class. One predicate, so the collector and the prose gate agree.
+    function isSkipped(el) {
+        return SKIP_TAGS.has(el.tagName) ||
+            el.namespaceURI !== HTML_NS ||
+            el.matches(MATH_SELECTOR);
+    }
 
     function hasBlockChild(el) {
         return el.querySelector(BLOCKY_SELECTOR) !== null;
@@ -570,7 +593,30 @@ html.llmtr-hide .llmtr { display: none; }
     // for un-rendered elements that carry NO such nodes, so we never harvest a
     // script's body as if it were prose (Reddit's inline `SML.load([...])`
     // module manifests were otherwise "translated" and injected as visible text).
+    //
+    // Inline math is the one place innerText lies. KaTeX and MathJax render
+    // every formula twice — the copy you see, plus a 1px-clipped duplicate
+    // holding the MathML for screen readers — and both count as rendered, so
+    // innerText hands back the formula twice: "…so that (at least) 𝐾\nK of its
+    // repos…". Blocks carrying that duplicate are read off a clone without it.
+    // The clone gives up innerText's layout awareness, which is why it drops
+    // <script>/<style> itself and redoes innerText's whitespace handling: a
+    // <br> becomes a newline, the source's own line breaks become spaces.
+    const MATH_A11Y = '.katex-mathml, mjx-assistive-mml';
+
+    function cloneText(el, drop) {
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll(drop).forEach(n => n.remove());
+        clone.querySelectorAll('br').forEach(n => n.replaceWith('\v'));
+        return (clone.textContent || '')
+            .replace(/[^\S\v]+/g, ' ')  // collapse the source's own line breaks
+            .replace(/ ?\v ?/g, '\n')   // ... but keep the <br>s, as innerText does
+            .trim();
+    }
+
     function renderedText(el) {
+        if (el.querySelector(MATH_A11Y))
+            return cloneText(el, MATH_A11Y + ', script, style, noscript');
         const t = (el.innerText || '').trim();
         if (t) return t;
         if (el.querySelector('script, style, noscript')) return '';
@@ -581,6 +627,11 @@ html.llmtr-hide .llmtr { display: none; }
         if (el.closest('[contenteditable="true"]')) return false;
         const text = renderedText(el);
         if (text.length < MIN_TEXT_LEN) return false;
+        // Nothing to translate in a block that is only a formula: the <div>
+        // wrapping a display equation reads as words ('reward', 'efficiency
+        // penalty') and would otherwise collect a paraphrase underneath it.
+        if (el.querySelector(MATH_SELECTOR) &&
+            (cloneText(el, MATH_SELECTOR).match(/\p{L}/gu) || []).length < 2) return false;
         const letters = (text.match(/\p{L}/gu) || []).length;
         if (letters < 2) return false;
         if (letters / text.length < 0.3) return false; // mostly numbers/symbols
@@ -603,7 +654,7 @@ html.llmtr-hide .llmtr { display: none; }
     function collect(el, out) {
         if (!el || el.nodeType !== 1) return;
         const tag = el.tagName;
-        if (SKIP_TAGS.has(tag)) return;
+        if (isSkipped(el)) return;
         if (el.classList.contains('llmtr') || el.classList.contains('llmtr-ui')) return;
         if (el.isContentEditable) return;
         if ((tag === 'HEADER' || tag === 'FOOTER') && !el.closest('article, main')) return;
@@ -654,7 +705,7 @@ html.llmtr-hide .llmtr { display: none; }
                 if (c.nodeType === 1 && c.tagName === 'BR') directBr++;
             if (directBr > bestBr && hasDirectText(node)) { best = node; bestBr = directBr; }
             for (let c = node.firstElementChild; c; c = c.nextElementSibling)
-                if (!SKIP_TAGS.has(c.tagName)) scan(c);
+                if (!isSkipped(c)) scan(c);
         })(el);
         return bestBr >= 2 ? best : null;
     }
@@ -1342,7 +1393,7 @@ html.llmtr-hide .llmtr { display: none; }
             if (n.nodeType === 3 && !/\S/.test(n.nodeValue)) continue; // blank between <br>s
             brRun = 0;
             if (n.nodeType === 3) text += n.nodeValue;
-            else if (!isBlockRun(n) && !SKIP_TAGS.has(n.tagName)) text += n.textContent || '';
+            else if (!isBlockRun(n) && !isSkipped(n)) text += n.textContent || '';
         }
         return { text: text.trim(), breaks };
     }
@@ -1357,7 +1408,7 @@ html.llmtr-hide .llmtr { display: none; }
     function measureProse(el, acc) {
         if (!el || el.nodeType !== 1 || enoughProse(acc)) return;
         const tag = el.tagName;
-        if (SKIP_TAGS.has(tag)) return; // also drops NAV/ASIDE/FORM chrome
+        if (isSkipped(el)) return; // also drops NAV/ASIDE/FORM chrome and formulas
         if ((tag === 'HEADER' || tag === 'FOOTER') && !el.closest('article, main')) return;
         if (isTextLeaf(el)) {
             // textContent, not innerText: this runs on a poll for up to two

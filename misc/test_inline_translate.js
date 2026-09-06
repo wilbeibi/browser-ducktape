@@ -221,6 +221,53 @@ test('loose text in table structure is left alone', async () => {
   assert.deepEqual(heads, ['CELL']);
 });
 
+// KaTeX renders every formula twice — a 1px-clipped MathML copy for screen
+// readers, plus the visible copy, which it builds out of little <span>s that
+// each look exactly like a text leaf. Both halves used to reach the collector:
+// the formula came back one glyph cluster at a time with a translation appended
+// into the middle of it, and the prose around inline math went to the model
+// with every symbol in it twice. These fixtures are KaTeX's real output shape.
+const KATEX_INLINE = '<span class="katex">'
+  + '<span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics>'
+  + '<mrow><mi>K</mi></mrow><annotation encoding="application/x-tex">K</annotation>'
+  + '</semantics></math></span>'
+  + '<span class="katex-html" aria-hidden="true"><span class="base">'
+  + '<span class="mord mathnormal">K</span></span></span></span>';
+
+const KATEX_DISPLAY = '<span class="katex-display"><span class="katex">'
+  + '<span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block">'
+  + '<semantics><mrow><mtext>reward</mtext><mo>=</mo><mtext>efficiency penalty</mtext></mrow>'
+  + '<annotation encoding="application/x-tex">\\text{reward} = \\text{efficiency penalty}</annotation>'
+  + '</semantics></math></span>'
+  + '<span class="katex-html" aria-hidden="true"><span class="base">'
+  + '<span class="mord text"><span class="mord">reward</span></span><span class="mrel">=</span>'
+  + '<span class="mord text"><span class="mord">efficiency penalty</span></span>'
+  + '</span></span></span></span>';
+
+test('inline math reaches the model once, in the form the reader sees', async () => {
+  const body = `<article><p>HEAD ${PARA} at least ${KATEX_INLINE} repos.</p></article>`;
+  assert.deepEqual(await collectedText(body), [`HEAD ${PARA} at least K repos.`]);
+});
+
+test('a rendered formula is not collected, whole or in pieces', async () => {
+  const body = `<article><p>ONE ${PARA}</p><div>${KATEX_DISPLAY}</div><p>TWO ${PARA}</p></article>`;
+  const heads = (await collectedText(body)).map(t => t.split(' ')[0]);
+  assert.deepEqual(heads, ['ONE', 'TWO']);
+});
+
+// tagName is only uppercased for HTML-namespace elements, so 'MATH' in
+// SKIP_TAGS never matched anything and the walk went straight into the MathML,
+// where <mtext> reads as prose and <annotation> hands over the LaTeX source.
+test('MathML with no KaTeX wrapper is left alone too', async () => {
+  const math = '<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow>'
+    + '<mtext>efficiency penalty</mtext></mrow>'
+    + '<annotation encoding="application/x-tex">\\text{efficiency penalty}</annotation>'
+    + '</semantics></math>';
+  const body = `<article><p>ONE ${PARA}</p><div>${math}</div><p>TWO ${PARA}</p></article>`;
+  const heads = (await collectedText(body)).map(t => t.split(' ')[0]);
+  assert.deepEqual(heads, ['ONE', 'TWO']);
+});
+
 // A framework that re-renders after the script has run can detach the button.
 // It used to stay gone for the life of the page — the module-level `fab` was
 // still truthy, so the poll returned early forever. Ctrl+T kept working, which
