@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.10.1
+// @version      1.11.0
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -26,6 +26,9 @@
     const DEFAULT_URL   = 'https://api.deepseek.com/v1/chat/completions';
     const DEFAULT_MODEL = 'deepseek-v4-flash';
     const DEFAULT_LANG  = 'Simplified Chinese (简体中文)';
+    const MW_CACHE_KEY = 'MW_PRONUNCIATION_CACHE_V1';
+    const MW_CACHE_TTL = 30 * 24 * 60 * 60 * 1000;
+    const MW_CACHE_MAX = 500;
 
     // DeepSeek retired 'deepseek-chat'/'deepseek-reasoner' on 2026-07-24 and the
     // API now rejects them. Changing DEFAULT_MODEL only helps new installs — anyone
@@ -144,6 +147,10 @@
             model: resolveModel(String(GM_getValue('MODEL', '') || '').trim()) || DEFAULT_MODEL,
             lang:  String(GM_getValue('TARGET_LANG', DEFAULT_LANG) || '').trim(),
         };
+    }
+
+    function getMerriamWebsterKey() {
+        return String(GM_getValue('MW_API_KEY', '') || '').trim();
     }
 
     // ==========================================
@@ -440,6 +447,28 @@ html.llmtr-hide .llmtr { display: none; }
 }
 .llmtr-sel-pop.llmtr-sel-wide { max-width: min(520px, 80vw); }
 .llmtr-sel-pop-body { white-space: pre-wrap; word-break: break-word; }
+.llmtr-sel-pronunciation {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 7px;
+    color: #777;
+    font-size: 13px;
+    line-height: 1.2;
+}
+.llmtr-sel-pronunciation[hidden] { display: none; }
+.llmtr-sel-headword { font-weight: 600; color: #333; }
+.llmtr-sel-ipa { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.llmtr-sel-play {
+    border: 0;
+    border-radius: 4px;
+    padding: 1px 4px;
+    background: transparent;
+    color: #5c5cff;
+    font: inherit;
+    cursor: pointer;
+}
+.llmtr-sel-play:hover { background: rgba(92,92,255,0.1); }
 .llmtr-sel-title {
     margin-bottom: 6px;
     font-size: 16px;
@@ -478,6 +507,8 @@ html.llmtr-hide .llmtr { display: none; }
 .llmtr-sel-pop-body.llmtr-sel-error { color: #d32f2f; }
 @media (prefers-color-scheme: dark) {
     .llmtr-sel-pop { background: #1e1e1e; color: #ddd; border-color: #444; }
+    .llmtr-sel-pronunciation { color: #9a9aa0; }
+    .llmtr-sel-headword { color: #e4e4e8; }
     .llmtr-sel-title { color: #fff; }
     .llmtr-sel-detail { color: #d0d0d0; }
     .llmtr-sel-pos { color: #98989d; }
@@ -1507,6 +1538,8 @@ html.llmtr-hide .llmtr { display: none; }
         const urlInput   = addField('API URL', 'text', DEFAULT_URL);
         const modelInput = addField('Model', 'text', DEFAULT_MODEL);
         const langInput  = addField('Target language', 'text', DEFAULT_LANG);
+        const mwKeyInput = addField('Merriam-Webster API key (optional, English pronunciation)',
+            'password', 'saved — leave blank to keep');
 
         // Suggestions, not a whitelist: a <datalist> leaves the field free text,
         // so an endpoint serving ids we have never heard of still works.
@@ -1564,7 +1597,9 @@ html.llmtr-hide .llmtr { display: none; }
         // anything put in an input is readable by that page. Never prefill the key —
         // show only that one is saved, and treat a blank field as "keep the saved key".
         const savedKey = String(GM_getValue('API_KEY', '') || '');
+        const savedMwKey = getMerriamWebsterKey();
         if (savedKey) keyInput.placeholder = 'saved — leave blank to keep';
+        if (!savedMwKey) mwKeyInput.placeholder = 'not configured';
         urlInput.value   = GM_getValue('API_URL', '');
         modelInput.value = resolveModel(String(GM_getValue('MODEL', '') || ''));
         langInput.value  = GM_getValue('TARGET_LANG', '');
@@ -1598,6 +1633,7 @@ html.llmtr-hide .llmtr { display: none; }
                 url:   urlInput.value.trim() || DEFAULT_URL,
                 model: resolveModel(modelInput.value.trim()) || DEFAULT_MODEL,
                 lang:  langInput.value.trim() || DEFAULT_LANG,
+                mwKey: mwKeyInput.value.trim() || savedMwKey,
             };
         }
 
@@ -1633,6 +1669,7 @@ html.llmtr-hide .llmtr { display: none; }
             GM_setValue('API_URL', vals.url);
             GM_setValue('MODEL', vals.model);
             GM_setValue('TARGET_LANG', vals.lang);
+            GM_setValue('MW_API_KEY', vals.mwKey);
             overlay.remove();
             onSave();
         };
@@ -1695,6 +1732,91 @@ html.llmtr-hide .llmtr { display: none; }
         if (text.length > 60) return false;
         if (/[.!?;,:。！？；，：\n]/.test(text)) return false;
         return text.split(/\s+/).length <= 8;
+    }
+
+    // The translation model is deliberately never asked to invent a
+    // pronunciation. Merriam-Webster's learner dictionary returns its IPA and,
+    // when available, a recording from the same entry.
+    const pronunciationInFlight = new Map();
+
+    function pronunciationWord(text) {
+        const word = String(text || '').trim().replace(/’/g, "'");
+        return /^[A-Za-z]+(?:['-][A-Za-z]+)*$/.test(word) ? word.toLowerCase() : '';
+    }
+
+    function getCachedPronunciation(word) {
+        try {
+            const cache = JSON.parse(GM_getValue(MW_CACHE_KEY, '{}') || '{}');
+            const hit = cache[word];
+            return hit && hit.at > Date.now() - MW_CACHE_TTL && hit.ipa ? hit : null;
+        } catch (e) { return null; }
+    }
+
+    function cachePronunciation(word, pronunciation) {
+        try {
+            const cache = JSON.parse(GM_getValue(MW_CACHE_KEY, '{}') || '{}');
+            cache[word] = { ...pronunciation, at: Date.now() };
+            const keys = Object.keys(cache);
+            if (keys.length > MW_CACHE_MAX) {
+                keys.sort((a, b) => (cache[a].at || 0) - (cache[b].at || 0));
+                for (let i = 0; i < keys.length - MW_CACHE_MAX; i++) delete cache[keys[i]];
+            }
+            GM_setValue(MW_CACHE_KEY, JSON.stringify(cache));
+        } catch (e) { /* pronunciation is an optional enhancement */ }
+    }
+
+    function merriamWebsterAudioUrl(baseName) {
+        if (!baseName) return '';
+        const base = String(baseName);
+        const dir = base.startsWith('bix') ? 'bix' : base.startsWith('gg') ? 'gg' :
+            /^[a-z]/i.test(base) ? base[0].toLowerCase() : 'number';
+        return 'https://media.merriam-webster.com/audio/prons/en/us/mp3/' + dir + '/' +
+            encodeURIComponent(base) + '.mp3';
+    }
+
+    function lookupPronunciation(word, key) {
+        const cached = getCachedPronunciation(word);
+        if (cached) return Promise.resolve(cached);
+        if (pronunciationInFlight.has(word)) return pronunciationInFlight.get(word);
+
+        const request = new Promise((resolve, reject) => {
+            const url = 'https://www.dictionaryapi.com/api/v3/references/learners/json/' +
+                encodeURIComponent(word) + '?key=' + encodeURIComponent(key);
+            GM_xmlhttpRequest({
+                method: 'GET', url, timeout: 2500,
+                headers: { Accept: 'application/json' },
+                onload(resp) {
+                    if (resp.status < 200 || resp.status >= 300) {
+                        reject(new Error('Pronunciation lookup failed'));
+                        return;
+                    }
+                    try {
+                        const entries = JSON.parse(resp.responseText || '[]');
+                        let pronunciation = null;
+                        for (const entry of entries) {
+                            const options = entry && entry.hwi && entry.hwi.prs;
+                            if (!Array.isArray(options)) continue;
+                            const match = options.find(p => p && p.ipa);
+                            if (!match) continue;
+                            pronunciation = {
+                                ipa: '/' + match.ipa + '/',
+                                audio: merriamWebsterAudioUrl(match.sound && match.sound.audio),
+                            };
+                            break;
+                        }
+                        if (pronunciation) cachePronunciation(word, pronunciation);
+                        resolve(pronunciation);
+                    } catch (e) {
+                        reject(new Error('Failed to parse pronunciation'));
+                    }
+                },
+                onerror: () => reject(new Error('Pronunciation lookup failed')),
+                ontimeout: () => reject(new Error('Pronunciation lookup timed out')),
+            });
+        });
+        pronunciationInFlight.set(word, request);
+        request.finally(() => pronunciationInFlight.delete(word)).catch(() => {});
+        return request;
     }
 
     function selectionTranslatePrompt(lang) {
@@ -1760,11 +1882,16 @@ Rules:
         removeSelPop();
         const p = document.createElement('div');
         p.className = 'llmtr-sel-pop llmtr-ui' + (wide ? ' llmtr-sel-wide' : '');
+        const pronunciation = document.createElement('div');
+        pronunciation.className = 'llmtr-sel-pronunciation';
+        pronunciation.hidden = true;
         const body = document.createElement('div');
         body.className = 'llmtr-sel-pop-body llmtr-sel-loading';
         body.textContent = '· · ·';
+        p.appendChild(pronunciation);
         p.appendChild(body);
         p._body = body;
+        p._pronunciation = pronunciation;
         p.style.left = rect.left + 'px';
         p.style.top  = (rect.bottom + 8) + 'px';
         p.addEventListener('mousedown', (e) => e.stopPropagation());
@@ -1780,6 +1907,45 @@ Rules:
         el.textContent = text;
         parent.appendChild(el);
         return el;
+    }
+
+    function renderPronunciation(popup, word, pronunciation) {
+        const line = popup && popup._pronunciation;
+        if (!line || !pronunciation || !pronunciation.ipa) return;
+        line.replaceChildren();
+        line.hidden = false;
+        appendText(line, 'llmtr-sel-headword', word);
+        appendText(line, 'llmtr-sel-ipa', pronunciation.ipa);
+        if (!pronunciation.audio) return;
+
+        const play = document.createElement('button');
+        play.className = 'llmtr-sel-play';
+        play.type = 'button';
+        play.textContent = 'Play';
+        play.title = 'Play pronunciation';
+        play.setAttribute('aria-label', 'Play pronunciation for ' + word);
+        play.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            try {
+                const audio = new window.Audio(pronunciation.audio);
+                audio.play().catch(() => showToast('Could not play pronunciation', 'error'));
+            } catch (err) {
+                showToast('Could not play pronunciation', 'error');
+            }
+        });
+        line.appendChild(play);
+    }
+
+    function loadPronunciation(popup, word, key) {
+        const lookupWord = pronunciationWord(word);
+        if (!lookupWord || !key) return;
+        lookupPronunciation(lookupWord, key).then((pronunciation) => {
+            // The user may have selected another word while this request was in flight.
+            if (selPop !== popup || !popup.isConnected) return;
+            renderPronunciation(popup, word, pronunciation);
+            repositionSelUI();
+        }).catch(() => {}); // A pronunciation must never make translation look broken.
     }
 
     // Typeset the dictionary-style answer (macOS 词典-look): bold headword,
@@ -1839,8 +2005,10 @@ Rules:
 
         const src = text.slice(0, MAX_SEGMENT_CHARS);
         const dict = isDictionaryQuery(src);
+        const mwKey = getMerriamWebsterKey();
         showSelPopup(rect, !dict);
         selAnchor = range; // removeSelBtn cleared it while no popup existed
+        if (dict && pronunciationWord(src) && mwKey) loadPronunciation(selPop, src, mwKey);
 
         const cacheSrc = (dict ? 'selection-dictionary-v1' : 'selection-translate-v1') + '\x00' + src;
         const cached = cacheGet(cacheSrc, cfg);

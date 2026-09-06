@@ -20,7 +20,7 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'inline_translate.user.js
 
 // Runs the userscript against a document and hands the live window to `probe`.
 async function runScript(bodyHtml, { lang = 'Simplified Chinese (简体中文)', mutate,
-                                     apiKey = 'sk-test', apiUrl, xhr } = {}, probe) {
+                                     apiKey = 'sk-test', apiUrl, mwKey, xhr } = {}, probe) {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>${bodyHtml}</body></html>`,
     { url: 'https://example.test/article' });
   const w = dom.window;
@@ -29,6 +29,7 @@ async function runScript(bodyHtml, { lang = 'Simplified Chinese (简体中文)',
   }
   const gm = { API_KEY: apiKey, TARGET_LANG: lang };
   if (apiUrl !== undefined) gm.API_URL = apiUrl;
+  if (mwKey !== undefined) gm.MW_API_KEY = mwKey;
   const heartbeats = []; // setInterval callbacks, so tests can tick them directly
   const requests = [];   // every GM_xmlhttpRequest the script issued
   const shim = {
@@ -48,7 +49,7 @@ async function runScript(bodyHtml, { lang = 'Simplified Chinese (简体中文)',
   if (mutate) mutate(w); // build shapes the HTML parser refuses to produce
   const keys = Object.keys(shim);
   new Function(...keys, SRC)(...keys.map(k => shim[k]));
-  const result = probe(w, { tick: () => heartbeats.forEach(fn => fn()), gm, requests });
+  const result = await probe(w, { tick: () => heartbeats.forEach(fn => fn()), gm, requests });
   w.close();
   return result;
 }
@@ -465,4 +466,77 @@ test('a late catalog response does not clobber another provider', async () => {
       return suggestions(modal);
     });
   assert.ok(models.every(m => !m.includes('/')), `expected DeepSeek ids, got ${models}`);
+});
+
+// ---------------------------------------------------------------------------
+// Merriam-Webster pronunciation
+// ---------------------------------------------------------------------------
+
+const pause = (w, ms = 15) => new Promise(resolve => w.setTimeout(resolve, ms));
+
+async function selectWordAndTranslate(w) {
+  w.Range.prototype.getBoundingClientRect = () => ({
+    left: 20, right: 60, top: 20, bottom: 40, width: 40, height: 20,
+  });
+  const text = w.document.getElementById('lookup-word').firstChild;
+  const range = w.document.createRange();
+  range.selectNodeContents(text);
+  const selection = w.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  w.document.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true }));
+  await pause(w);
+  assert.ok(w.document.querySelector('.llmtr-sel-btn'), 'selection should offer translation');
+  w.document.querySelector('.llmtr-sel-btn').click();
+  await pause(w, 0);
+}
+
+test('a selected English word shows authoritative IPA and reuses the cached lookup', async () => {
+  const got = await runScript('<p id="lookup-word">apple</p>', {
+    mwKey: 'mw-test-key',
+    xhr: (opts) => {
+      if (opts.url.includes('dictionaryapi.com')) {
+        opts.onload({ status: 200, responseText: JSON.stringify([{
+          hwi: { prs: [{ ipa: 'ˈæpəl', sound: { audio: 'apple001' } }] },
+        }]) });
+      }
+    },
+  }, async (w, { requests }) => {
+    let played = '';
+    w.Audio = class {
+      constructor(url) { played = url; }
+      play() { return Promise.resolve(); }
+    };
+    await selectWordAndTranslate(w);
+    const first = w.document.querySelector('.llmtr-sel-pronunciation');
+    assert.equal(first.textContent, 'apple/ˈæpəl/Play');
+    first.querySelector('button[aria-label="Play pronunciation for apple"]').click();
+    assert.equal(played,
+      'https://media.merriam-webster.com/audio/prons/en/us/mp3/a/apple001.mp3');
+
+    w.document.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true }));
+    await selectWordAndTranslate(w);
+    return {
+      pronunciation: w.document.querySelector('.llmtr-sel-pronunciation').textContent,
+      lookups: requests.filter(r => r.url.includes('dictionaryapi.com')).length,
+    };
+  });
+  assert.equal(got.pronunciation, 'apple/ˈæpəl/Play');
+  assert.equal(got.lookups, 1, 'a repeated word should use the saved pronunciation');
+});
+
+test('settings retain a separate optional Merriam-Webster key', async () => {
+  const saved = await runScript(`<article>${`<p>${PARA}</p>`.repeat(4)}</article>`, {},
+    (w, { gm }) => {
+      const fab = w.document.querySelector('.llmtr-fab');
+      fab.oncontextmenu({ preventDefault() {}, stopPropagation() {} });
+      const modal = w.document.querySelector('.llmtr-modal');
+      const input = [...modal.querySelectorAll('input')].find(el =>
+        el.placeholder === 'not configured');
+      assert.ok(input, 'pronunciation key input should be visible');
+      input.value = 'mw-user-key';
+      [...modal.querySelectorAll('button')].find(el => el.textContent === 'Save').click();
+      return gm.MW_API_KEY;
+    });
+  assert.equal(saved, 'mw-user-key');
 });
