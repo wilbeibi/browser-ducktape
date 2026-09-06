@@ -57,6 +57,9 @@ Names your Gemini tabs after the conversation so you can actually find them.
 
 ### 🛠️ Utilities
 
+**Duplicate Tabs Closer** — [Install](https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/duplicate_tabs_closer.user.js) · [Source](duplicate_tabs_closer.user.js)
+Open a page you already have open and the new tab closes itself, jumping you to the tab you already had. Or leave it in manual mode and clean up on demand: **Close duplicate tabs everywhere** in the Tampermonkey/Violentmonkey menu sweeps every tab in every window of the profile at once — two windows of forty tabs is exactly the case it is for. The oldest copy of each page always survives, reloads and session restores never close anything, and `#hash`-only differences still count as the same page. No extension: tabs find each other over a same-origin `BroadcastChannel`, and the sweep travels over the manager's own storage. Settings (same menu, or `Alt+Shift+D`) hold match strictness and a per-site exclusion list.
+
 **GitHub to DeepWiki Link** — [Install](https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/deepwiki_on_github.user.js) · [Source](deepwiki_on_github.user.js)
 Adds a button on GitHub repos to jump straight to DeepWiki for AI-generated docs and code explanations.
 

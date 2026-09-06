@@ -53,9 +53,13 @@ const NO_INPAGE_AFFORDANCE = [
 
 // Safari Userscripts ships only the async GM.* namespace: bare synchronous
 // GM_getValue/GM_setValue throw ReferenceError.
+// duplicate_tabs_closer is a deliberate addition: its whole mechanism is
+// `@grant window.close`, which Safari Userscripts does not implement, so the
+// script cannot function there whatever its storage calls look like.
 const SYNC_GM_STORAGE = [
   'adhd_reader.user.js', 'hover_verdict.user.js',
   'inline_translate.user.js', 'prompt_rewrite.user.js',
+  'duplicate_tabs_closer.user.js',
 ];
 
 const problems = [];
@@ -115,6 +119,7 @@ for (const file of scripts) {
   const used = new Set();
   for (const m of body.matchAll(/\bGM_[A-Za-z_]+/g)) used.add(m[0]);
   if (/(^|[^.\w])window\.close\s*\(/.test(body)) used.add('window.close');
+  if (/(^|[^.\w])window\.focus\s*\(/.test(body)) used.add('window.focus');
 
   // -- 1. Must parse the way a manager evaluates it. ---------------------------
   // `node --check` is a FALSE FRIEND: it parses .js as CommonJS, which function-wraps
