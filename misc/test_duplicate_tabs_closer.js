@@ -98,6 +98,71 @@ test('the surrender target is the oldest peer, not just any older one', () => {
   assert.equal(core.decideClose(me, [tab(90, 'b'), tab(10, 'a'), tab(50, 'c')]).id, 'a');
 });
 
+// -- the pin (a hand-triggered sweep keeps the tab you are looking at) --------
+
+test('a pinned tuple sorts before every unpinned one, however old', () => {
+  const pinned = { ...tab(9999, 'z'), pin: true };
+  assert.equal(core.compareTuple(pinned, tab(1, 'a')), -1);
+  assert.equal(core.compareTuple(tab(1, 'a'), pinned), 1);
+});
+
+test('pinned tabs still order among themselves, so the order stays total', () => {
+  const a = { ...tab(10, 'a'), pin: true };
+  const b = { ...tab(20, 'b'), pin: true };
+  assert.equal(core.compareTuple(a, b), -1);
+  assert.equal(core.compareTuple(b, a), 1);
+  // and two simultaneous sweeps cannot close each other
+  assert.equal(!!(core.decideClose(a, [b]) && core.decideClose(b, [a])), false);
+});
+
+test('the tab that pinned itself survives; the older copy surrenders to it', () => {
+  const me = { ...tab(500, 'me'), pin: true };
+  const older = tab(10, 'orig');
+  assert.equal(core.decideClose(me, [older]), null);
+  assert.equal(core.decideClose(older, [me]).id, 'me');
+});
+
+test('a pin only speaks for its own URL', () => {
+  const me = tab(500, 'me');
+  const pinnedElsewhere = { ...tab(10, 'x', 'https://a.com/other'), pin: true };
+  assert.equal(core.decideClose(me, [pinnedElsewhere]), null);
+});
+
+test('the pin survives message parsing, and only as a real true', () => {
+  assert.equal(core.parseMessage({ t: 'claim', key: 'k', id: 'i', birth: 1, pin: true }).pin, true);
+  for (const pin of [undefined, false, 1, 'true', {}]) {
+    const parsed = core.parseMessage({ t: 'claim', key: 'k', id: 'i', birth: 1, pin });
+    assert.equal('pin' in parsed, false, String(pin));
+  }
+});
+
+// -- keepers (the answer to browser-pinned tabs, which JS cannot see) --------
+
+test('a keeper page is never pinned, so oldest-wins survives the sweep', () => {
+  assert.equal(core.mayPin('https://mail.google.com/u/0', { keepers: ['mail.google.com'] }), false);
+  assert.equal(core.mayPin('https://other.com/x', { keepers: ['mail.google.com'] }), true);
+  assert.equal(core.mayPin('https://mail.google.com/u/0', {}), true);
+});
+
+test('keepers match hosts and paths exactly like exclusions do', () => {
+  const cfg = { keepers: ['example.com/inbox'] };
+  assert.equal(core.mayPin('https://example.com/inbox/42', cfg), false);
+  assert.equal(core.mayPin('https://mail.example.com/inbox', cfg), false);
+  assert.equal(core.mayPin('https://example.com/inboxes', cfg), true);
+});
+
+test('a keeper is not an exclusion - the page is still deduped', () => {
+  const cfg = { keepers: ['a.com'] };
+  assert.equal(core.isSweepable('https://a.com/p', cfg), true);
+  assert.equal(core.isEligible('https://a.com/p', 'navigate', cfg), true);
+});
+
+test('config normalization cleans the keeper list too', () => {
+  const c = core.normalizeConfig({ keepers: ['a.com', ' a.com ', '', 'b.com'] });
+  assert.deepEqual(c.keepers, ['a.com', 'b.com']);
+  assert.deepEqual(core.normalizeConfig({ keepers: 'nope' }).keepers, []);
+});
+
 // -- exclusions --------------------------------------------------------------
 
 test('host exclusions cover subdomains, not sibling domains', () => {
@@ -145,6 +210,10 @@ test('well-formed messages survive parsing', () => {
     core.parseMessage({ t: 'focus', key: 'k', id: 'i', target: 'j' }),
     { t: 'focus', key: 'k', id: 'i', target: 'j' },
   );
+  assert.deepEqual(
+    core.parseMessage({ t: 'ack', key: 'k', id: 'i', target: 'j' }),
+    { t: 'ack', key: 'k', id: 'i', target: 'j' },
+  );
 });
 
 test('anything a hostile same-origin page could throw at us is rejected', () => {
@@ -157,6 +226,8 @@ test('anything a hostile same-origin page could throw at us is rejected', () => 
     { t: 'claim', key: 'k', id: '', birth: 5 },
     { t: 'hold', key: 'k', birth: 5 },                       // no id
     { t: 'focus', key: 'k', id: 'i' },                       // no target
+    { t: 'ack', key: 'k', id: 'i' },                         // no target
+    { t: 'ack', key: 'k', id: 'i', target: '' },
     { t: 'evict', key: 'k', id: 'i', birth: 5 },             // unknown verb
   ];
   for (const data of bad) assert.equal(core.parseMessage(data), null, JSON.stringify(data));
@@ -165,6 +236,12 @@ test('anything a hostile same-origin page could throw at us is rejected', () => 
 test('parsed messages carry no extra fields through', () => {
   const parsed = core.parseMessage({ t: 'claim', key: 'k', id: 'i', birth: 5, evil: 'x' });
   assert.equal('evil' in parsed, false);
+});
+
+test('the loser outwaits the winner, so a late ack still lands', () => {
+  // If the loser gave up first it would close into the browser's own choice of
+  // neighbour tab - the exact bug the ack exists to prevent.
+  assert.ok(core.CLOSE_WAIT_MS > core.FOCUS_ACK_MS);
 });
 
 // -- config ------------------------------------------------------------------

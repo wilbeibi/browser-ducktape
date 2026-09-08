@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Duplicate Tabs Closer
-// @version      1.3.0
-// @description  Opening a page you already have open closes the new tab and jumps you to the old one - automatically, or on demand from a single menu command that sweeps every tab you have open. No extension, no tab API: duplicate tabs find each other over a same-origin BroadcastChannel.
+// @version      1.4.0
+// @description  Opening a page you already have open closes the new tab and jumps you to the old one - automatically, or on demand from a single menu command that sweeps every tab you have open and keeps the one you are looking at. No extension, no tab API: duplicate tabs find each other over a same-origin BroadcastChannel.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
 // @license      MIT
@@ -31,6 +31,13 @@
 // impossible: with N duplicates every tab computes the same order, so exactly
 // the minimum survives.
 //
+// A sweep you trigger by hand is the one exception: the tab you are LOOKING at
+// pins itself, which sorts it before every unpinned tuple, so the copy in front
+// of you is the one that survives and the browser never has to move you at all.
+// Pinning preserves the total order (pinned tabs still order among themselves by
+// birth, id), so mutual suicide stays impossible even if two windows sweep at
+// the same moment.
+//
 // The pure part of that (no DOM, no GM_*, no BroadcastChannel) lives in `core`
 // and is exercised by misc/test_duplicate_tabs_closer.js.
 // ---------------------------------------------------------------------------
@@ -40,6 +47,8 @@ const core = (() => {
 
   const CHANNEL = 'ducktape-dupes-v1';
   const HOLD_WINDOW_MS = 350;   // how long a fresh tab waits for `hold` replies
+  const FOCUS_ACK_MS = 500;     // how long the winner waits to actually be foreground
+  const CLOSE_WAIT_MS = 1200;   // how long the loser holds its close for that ack
   const CLOSE_FALLBACK_MS = 600; // still alive after this => window.close() was refused
   const TOAST_MS = 4000;
 
@@ -51,6 +60,7 @@ const core = (() => {
                          // for the sweep command. Off is the manager's job.
     matchMode: 'hash',   // 'exact' | 'hash' | 'tracking'
     exclusions: [],      // 'example.com' or 'example.com/some/path'
+    keepers: [],         // pages whose ORIGINAL copy wins even over a sweep
     showToast: true,
   };
 
@@ -92,9 +102,11 @@ const core = (() => {
     return u.href;
   }
 
-  // Total order. Older wins; the id breaks exact-millisecond ties the same way
-  // in every tab, which is the property the whole protocol rests on.
+  // Total order. A pin wins, then older wins; the id breaks exact-millisecond
+  // ties the same way in every tab, which is the property the whole protocol
+  // rests on.
   function compareTuple(a, b) {
+    if (!!a.pin !== !!b.pin) return a.pin ? -1 : 1;
     if (a.birth !== b.birth) return a.birth < b.birth ? -1 : 1;
     if (a.id === b.id) return 0;
     return a.id < b.id ? -1 : 1;
@@ -111,7 +123,7 @@ const core = (() => {
     return best;
   }
 
-  function isExcluded(href, list) {
+  function matchesList(href, list) {
     let u;
     try { u = new URL(href); } catch { return false; }
     const host = u.hostname.toLowerCase();
@@ -127,6 +139,19 @@ const core = (() => {
       if (!ePath) return true;
       return path === ePath || path.startsWith(`${ePath}/`);
     });
+  }
+
+  const isExcluded = (href, list) => matchesList(href, list);
+
+  // A browser-pinned tab is invisible to a userscript: no DOM property and no
+  // manager API reports one, so we cannot give it priority by detecting it. The
+  // keeper list is how you tell us it exists. A page on the list simply never
+  // gets pinned by a sweep, which falls it back to oldest-wins - and that is the
+  // rule a pinned tab wants, since it is the oldest copy of its URL and it comes
+  // back from every session restore.
+  function mayPin(href, cfg) {
+    const c = { ...DEFAULTS, ...(cfg || {}) };
+    return !matchesList(href, c.keepers);
   }
 
   // May this tab close ITSELF? A tab that answers "no" still joins the channel
@@ -168,30 +193,38 @@ const core = (() => {
     if (typeof id !== 'string' || !id) return null;
     if (t === 'claim' || t === 'hold') {
       if (typeof data.birth !== 'number' || !Number.isFinite(data.birth)) return null;
-      return { t, key, id, birth: data.birth };
+      const out = { t, key, id, birth: data.birth };
+      if (data.pin === true) out.pin = true;
+      return out;
     }
-    if (t === 'focus') {
+    // 'focus' asks the winner to come forward; 'ack' is the winner reporting
+    // that it did, which is the loser's cue that closing is now safe.
+    if (t === 'focus' || t === 'ack') {
       if (typeof data.target !== 'string' || !data.target) return null;
       return { t, key, id, target: data.target };
     }
     return null;
   }
 
+  const cleanList = (list) => (Array.isArray(list)
+    ? [...new Set(list.map((e) => String(e || '').trim()).filter(Boolean))]
+    : []);
+
   function normalizeConfig(raw) {
     const c = { ...DEFAULTS, ...(raw && typeof raw === 'object' ? raw : {}) };
     if (!['exact', 'hash', 'tracking'].includes(c.matchMode)) c.matchMode = DEFAULTS.matchMode;
     if (!MODES.includes(c.mode)) c.mode = DEFAULTS.mode;
     c.showToast = c.showToast !== false;
-    c.exclusions = Array.isArray(c.exclusions)
-      ? [...new Set(c.exclusions.map((e) => String(e || '').trim()).filter(Boolean))]
-      : [];
+    c.exclusions = cleanList(c.exclusions);
+    c.keepers = cleanList(c.keepers);
     return c;
   }
 
   return {
-    CHANNEL, HOLD_WINDOW_MS, CLOSE_FALLBACK_MS, TOAST_MS, MAX_PEERS, MODES, DEFAULTS,
+    CHANNEL, HOLD_WINDOW_MS, FOCUS_ACK_MS, CLOSE_WAIT_MS, CLOSE_FALLBACK_MS,
+    TOAST_MS, MAX_PEERS, MODES, DEFAULTS,
     isTrackingParam, normalizeKey, compareTuple, decideClose, addPeer,
-    isExcluded, isEligible, isSweepable, parseMessage, normalizeConfig,
+    isExcluded, matchesList, mayPin, isEligible, isSweepable, parseMessage, normalizeConfig,
   };
 })();
 
@@ -224,6 +257,9 @@ if (typeof module !== 'undefined' && module.exports) {
     decided: false,
     sweeping: false,
     winner: null,
+    closing: false,   // we have surrendered and are waiting on the winner's ack
+    closed: false,
+    ackTimer: null,
     lastHref: '',
     channel: null,
   };
@@ -282,7 +318,19 @@ if (typeof module !== 'undefined' && module.exports) {
     if (msg.t === 'focus') {
       if (msg.target !== state.self.id || msg.key !== state.self.key) return;
       try { window.focus(); } catch { /* grant unsupported */ }
-      if (cfg.showToast) showToast(`Closed a duplicate tab · ${REOPEN_HINT} to reopen`);
+      // The loser is holding its close until we answer. Answer when we are
+      // really the tab in front - not when we merely asked to be.
+      whenForeground(() => {
+        post({ t: 'ack', key: state.self.key, id: state.self.id, target: msg.id });
+        if (cfg.showToast) showToast(`Closed a duplicate tab · ${REOPEN_HINT} to reopen`);
+      });
+      return;
+    }
+
+    if (msg.t === 'ack') {
+      if (!state.closing || msg.target !== state.self.id || msg.key !== state.self.key) return;
+      clearTimeout(state.ackTimer);
+      closeSelf();
       return;
     }
 
@@ -308,9 +356,40 @@ if (typeof module !== 'undefined' && module.exports) {
   }
 
   // Hand the session to the older tab and get out of the way.
+  //
+  // Order matters, and it used to be wrong: window.close() took effect while
+  // window.focus() was still in flight to the tab manager, so the browser had
+  // already picked whatever tab sat next to this one. Now the winner acks once
+  // it is genuinely in the foreground and only then do we disappear - so
+  // sweeping from a duplicate lands you on the original, not on a neighbour.
+  //
+  // And only a tab you are LOOKING at may hand off focus at all. A background
+  // duplicate closing itself must not yank you across the profile, which is
+  // what every tab a sweep touched used to do.
   function surrender() {
+    state.closing = true;
+    state.closed = false; // the banner's Switch is a retry of a refused close
+    if (document.hidden) { closeSelf(); return; }
     post({ t: 'focus', key: state.self.key, id: state.self.id, target: state.winner.id });
-    closeSelf();
+    state.ackTimer = setTimeout(closeSelf, core.CLOSE_WAIT_MS);
+  }
+
+  // Runs fn once this tab is the visible one, or gives up quietly. Visibility is
+  // the only honest signal here: window.focus() is asynchronous under the tab
+  // manager and a silent no-op in managers without the grant.
+  function whenForeground(fn) {
+    if (!document.hidden) { fn(); return; }
+    let done = false;
+    const onVis = () => { if (!document.hidden) fire(); };
+    const fire = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVis);
+      fn();
+    };
+    const timer = setTimeout(fire, core.FOCUS_ACK_MS);
+    document.addEventListener('visibilitychange', onVis);
   }
 
   // -- the sweep ------------------------------------------------------------
@@ -334,15 +413,25 @@ if (typeof module !== 'undefined' && module.exports) {
     if (!core.isSweepable(location.href, cfg)) return;
     state.sweeping = true;
     state.peers = [];
+    // You asked for this sweep from THIS tab, so this tab is the copy you want
+    // to keep. Pinning says so on the wire: every duplicate of this URL now
+    // surrenders to us, instead of us being marched off to the oldest copy.
+    if (local && core.mayPin(location.href, cfg)) state.self = { ...state.self, pin: true };
     post({ t: 'claim', ...state.self });
     resolve(); // a peer may have claimed us already
     setTimeout(() => {
       state.sweeping = false;
-      if (local && !state.decided) showToast('No duplicate of this tab is open');
+      if (!local || state.decided) return;
+      const n = state.peers.length;
+      showToast(n
+        ? `Closed ${n} duplicate${n === 1 ? '' : 's'} of this tab · ${REOPEN_HINT} to reopen`
+        : 'No duplicate of this tab is open');
     }, SWEEP_WINDOW_MS);
   }
 
   function closeSelf() {
+    if (state.closed) return; // a late ack must not re-run this
+    state.closed = true;
     try { window.close(); } catch { /* fall through to the banner */ }
     // window.close() is a silent no-op wherever the grant is unsupported
     // (Safari's Userscripts extension has neither grant). If we are still here,
@@ -412,8 +501,8 @@ if (typeof module !== 'undefined' && module.exports) {
     .dtc-btn { all: unset; cursor: pointer; padding: 4px 10px; border-radius: 6px;
       background: rgba(255,255,255,.12); color: #f5f5f5; font-size: 12px; }
     .dtc-btn:hover { background: rgba(255,255,255,.22); }
-    .dtc-panel { left: 50%; top: 12%; transform: translateX(-50%); width: 360px;
-      max-width: calc(100vw - 32px); padding: 16px; }
+    .dtc-panel { left: 50%; top: 8%; transform: translateX(-50%); width: 360px;
+      max-width: calc(100vw - 32px); max-height: 84vh; overflow: auto; padding: 16px; }
     .dtc-panel h2 { all: unset; display: block; font-size: 14px; font-weight: 600;
       margin-bottom: 10px; }
     .dtc-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
@@ -421,7 +510,7 @@ if (typeof module !== 'undefined' && module.exports) {
     .dtc-panel select, .dtc-panel textarea { font: inherit; color: #f5f5f5;
       background: #2b2d31; border: 1px solid rgba(255,255,255,.16); border-radius: 6px;
       padding: 4px 6px; box-sizing: border-box; }
-    .dtc-panel textarea { width: 100%; height: 84px; resize: vertical; margin-top: 4px; }
+    .dtc-panel textarea { width: 100%; height: 68px; resize: vertical; margin-top: 4px; }
     .dtc-hint { opacity: .6; font-size: 11px; margin-top: 2px; }
     .dtc-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
     `);
@@ -478,10 +567,7 @@ if (typeof module !== 'undefined' && module.exports) {
     whenBody(() => {
       const el = layer('dtc-banner');
       el.append(document.createTextNode('Already open in another tab'));
-      el.append(button('Switch', () => {
-        post({ t: 'focus', key: state.self.key, id: state.self.id, target: state.winner.id });
-        try { window.close(); } catch { /* nothing else to try */ }
-      }));
+      el.append(button('Switch', surrender));
       el.append(button('Keep both', () => {
         state.decided = true;
         state.canClose = false;
@@ -547,30 +633,45 @@ if (typeof module !== 'undefined' && module.exports) {
       hint.className = 'dtc-hint';
       hint.textContent = 'example.com or example.com/inbox · subdomains included';
 
+      const keepLabel = document.createElement('div');
+      keepLabel.textContent = 'Always keep the original copy (one per line)';
+      const keepList = document.createElement('textarea');
+      keepList.value = cfg.keepers.join('\n');
+      const keepHint = document.createElement('div');
+      keepHint.className = 'dtc-hint';
+      keepHint.textContent = 'For tabs you keep pinned in the browser: a sweep hands you '
+        + 'the original instead of keeping the copy you swept from. We cannot see which '
+        + 'tabs are pinned - no browser API tells a userscript that.';
+
       const actions = document.createElement('div');
       actions.className = 'dtc-actions';
       actions.append(
-        button('Exclude this site', () => {
-          const host = location.hostname;
-          const lines = exList.value.split('\n').map((s) => s.trim()).filter(Boolean);
-          if (!lines.includes(host)) lines.push(host);
-          exList.value = lines.join('\n');
-        }),
+        button('Exclude this site', () => addHost(exList)),
+        button('Keep this original', () => addHost(keepList)),
         button('Save', () => {
           saveConfig({
             mode: modeSel.value,
             showToast: toast.input.checked,
             matchMode: mode.value,
             exclusions: exList.value.split('\n'),
+            keepers: keepList.value.split('\n'),
           });
           el.remove();
         }),
         button('Close', () => el.remove()),
       );
 
-      el.append(modeRowTop, toast.row, modeRow, exLabel, exList, hint, actions);
+      el.append(modeRowTop, toast.row, modeRow, exLabel, exList, hint,
+        keepLabel, keepList, keepHint, actions);
       document.body.appendChild(el);
     });
+  }
+
+  function addHost(area) {
+    const host = location.hostname;
+    const lines = area.value.split('\n').map((s) => s.trim()).filter(Boolean);
+    if (!lines.includes(host)) lines.push(host);
+    area.value = lines.join('\n');
   }
 
   function checkbox(text, checked) {
