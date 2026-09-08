@@ -1,0 +1,21 @@
+README.md
+  s_7cf4b5741818c6::t_e29ee06830735e 3,7,9
+  s_7cf4b5741818c6::t_abf50e47a96f80 18,23,28,33,38,41,46,51,54
+  s_7cf4b5741818c6::t_2ca573577118a4 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2f684f112919da3b9286ed17319204c401f7d2b6",
+  "prompts": {},
+  "sessions": {
+    "s_7cf4b5741818c6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0835e-2faf-7a61-ae03-177b7c5652d7",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Hongyi Shen <wilbeibi@gmail.com>"
+    }
+  }
+}
