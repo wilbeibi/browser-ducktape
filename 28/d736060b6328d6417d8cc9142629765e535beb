@@ -1,0 +1,30 @@
+README.md
+  s_33ab94a626da2a::t_1cd5154cba63f5 61
+duplicate_tabs_closer.user.js
+  s_33ab94a626da2a::t_aa401c0ff2934c 3,50-51,200-202,224-225,260-262,321-333,359-368,370,372,374-392,433-434,570
+  s_33ab94a626da2a::t_47d1bd50bd2934 63,126,144-156,209-212,218-219,227,419,427
+  s_33ab94a626da2a::t_200090fbae5b8d 371
+  s_33ab94a626da2a::t_fbc1a53e9a54dc 504-505,513,636-645,649-650,657,664-665,670-674
+  s_33ab94a626da2a::t_e8f87e67baa4b6 34-40,105-107,109,196-198,416-418,424-426,428
+  s_33ab94a626da2a::t_95e200c0a58b75 4
+misc/test_duplicate_tabs_closer.js
+  s_33ab94a626da2a::t_677d4d781137b8 139-165
+  s_33ab94a626da2a::t_200090fbae5b8d 213-216,229-230,241-244
+  s_33ab94a626da2a::t_ef3febeaddd61c 101-138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "28d736060b6328d6417d8cc9142629765e535beb",
+  "prompts": {},
+  "sessions": {
+    "s_33ab94a626da2a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cee5b9c5-ca00-4f61-922a-1d6a26b3668d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Hongyi Shen <wilbeibi@gmail.com>"
+    }
+  }
+}
