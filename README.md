@@ -50,6 +50,9 @@ Gives Gemini tabs useful names, which makes finding the right conversation less 
 **Duplicate Tabs Closer** — [Install](https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/duplicate_tabs_closer.user.js) · [Source](duplicate_tabs_closer.user.js)
 Closes duplicate tabs across browser windows. Apparently the same page did not need to be open four times.
 
+**GitHub Tab Title** — [Install](https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/github_tab_title.user.js) · [Source](github_tab_title.user.js)
+Rewrites GitHub tab titles as `#123 Mount volumes globally · rlp`, so a crowded tab strip still tells you which issue, PR, file, or commit each tab is.
+
 **GitHub to DeepWiki Link** — [Install](https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/deepwiki_on_github.user.js) · [Source](deepwiki_on_github.user.js)
 Gets you from a GitHub repository to its DeepWiki explanation without the usual copy, paste, and minor sigh.
 
