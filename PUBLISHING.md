@@ -32,7 +32,7 @@ raw-URL installs and the Greasy Fork listing. Without a bump, neither one update
 
 ## Which scripts are worth listing
 
-The narrow ones (`claude_usage_pace`, `gemini_dynamic_tab_title`, `deepwiki_on_github`) will find
+The narrow ones (`deepwiki_on_github`) will find
 their audience through Greasy Fork's per-site browse pages, which is exactly the discovery the
 GitHub repo cannot give them. The AI scripts need an API key, so lead their descriptions with that
 requirement rather than burying it — an install that silently does nothing is worse than no

@@ -37,14 +37,6 @@ Helps you decide whether a link is worth opening before it becomes another tab y
 **Prompt Enhancer** — [Install](https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/prompt_rewrite.user.js) · [Source](prompt_rewrite.user.js)
 Cleans up rough prompts for Claude, ChatGPT, and Gemini without turning them into a corporate memo.
 
-**Claude Usage Pace Indicator** — [Install](https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/claude_usage_pace.user.js) · [Source](claude_usage_pace.user.js)
-Shows whether your Claude usage is on pace, so the limit does not arrive as a fun little surprise.
-
-![Claude Usage Pace Demo](screenshots/pacer.png)
-
-**Gemini Dynamic Tab Title** — [Install](https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/gemini_dynamic_tab_title.user.js) · [Source](gemini_dynamic_tab_title.user.js)
-Gives Gemini tabs useful names, which makes finding the right conversation less archaeological.
-
 ### 🛠️ Utilities
 
 **Duplicate Tabs Closer** — [Install](https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/duplicate_tabs_closer.user.js) · [Source](duplicate_tabs_closer.user.js)

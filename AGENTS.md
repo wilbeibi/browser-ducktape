@@ -69,11 +69,9 @@ page's CSP on most sites.
 
 ### Page context vs content context
 
-`@inject-into content` (used by `deepwiki_on_github` and `gemini_dynamic_tab_title`) is a
-**Violentmonkey** key; Tampermonkey ignores it and uses `@sandbox` instead. The comment at
-`gemini_dynamic_tab_title.user.js:61` explains why that script must not run in the page context:
-Google's CSP blocks it on Firefox. Respect these choices — they encode a bug that was already
-found and fixed once.
+`@inject-into content` (used by `deepwiki_on_github`) is a
+**Violentmonkey** key; Tampermonkey ignores it and uses `@sandbox` instead. Respect this choice —
+it encodes a bug that was already found and fixed once.
 
 ### CSP
 
@@ -89,11 +87,11 @@ Tampermonkey 5.5.0 (MV3) in Chromium showed a `@grant none` script running fine 
 apparently because MV3 injects via `chrome.userScripts` into a world the page CSP does not govern.
 
 Treat this as unsettled. The repo's stance is to sidestep the question entirely: **no script uses
-`@grant none`.** The three that used to (`deepwiki_on_github`, `gemini_dynamic_tab_title`,
-`claude_usage_pace`) now declare `@grant GM_info` — a deliberate no-op grant whose only job is to
-keep the script out of raw page-context injection. It is correct under the old model and harmless
-under the new one, and it costs nothing because none of them touch page globals. `lint_headers.js`
-enforces this. If you ever need page-context access, that is the moment to actually re-test.
+`@grant none`.** `deepwiki_on_github`, the one that used to, now declares `@grant GM_info` — a
+deliberate no-op grant whose only job is to keep the script out of raw page-context injection. It
+is correct under the old model and harmless under the new one, and it costs nothing because it
+does not touch page globals. `lint_headers.js` enforces this. If you ever need page-context
+access, that is the moment to actually re-test.
 
 For CSS, prefer `GM_addStyle` over appending a hand-built `<style>` element: the manager mediates it
 and it is not subject to the page's `style-src`.
