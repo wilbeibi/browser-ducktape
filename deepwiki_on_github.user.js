@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         GitHub to DeepWiki Link
-// @version      0.3
+// @version      0.4
 // @description  Adds a button to GitHub repository pages that links to the corresponding DeepWiki page
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -35,8 +35,12 @@
 
     let debounceTimer;
     const observer = new MutationObserver(() => {
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(onPageChange, 300);
+        if (!debounceTimer) {
+            debounceTimer = setTimeout(() => {
+                debounceTimer = null;
+                onPageChange();
+            }, 300);
+        }
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
@@ -118,24 +122,26 @@
     function insertButton(button) {
         // Try multiple possible insertion points in order of preference
 
-        // 1. Try the repository navigation bar (UnderlineNav)
-        const repoNav = document.querySelector('ul.UnderlineNav-body');
+        // GitHub's signed-in navigation uses Primer classes; the older layout
+        // still uses UnderlineNav-body.
+        const repoNav = document.querySelector('nav[aria-label="Repository"] > ul') ||
+            document.querySelector('ul.UnderlineNav-body');
         if (repoNav) {
             const listItem = document.createElement('li');
-            listItem.className = 'ml-3';
+            listItem.style.alignSelf = 'center';
             listItem.appendChild(button);
             repoNav.appendChild(listItem);
             return true;
         }
 
-        // 2. Try the repository header actions
+        // Try the repository header actions
         const headerActions = document.querySelector('.file-navigation');
         if (headerActions) {
             headerActions.appendChild(button);
             return true;
         }
 
-        // 3. Try the pagehead actions
+        // Try the pagehead actions
         const pagehead = document.querySelector('.pagehead-actions');
         if (pagehead) {
             const listItem = document.createElement('li');
@@ -144,21 +150,20 @@
             return true;
         }
 
-        // 4. Try the repository details area
+        // Try the repository details area
         const repoDetails = document.querySelector('#repository-details-container');
         if (repoDetails) {
             repoDetails.appendChild(button);
             return true;
         }
 
-        // 5. Last resort: try to find any navigation element
+        // Last resort: try to find any navigation element
         const anyNav = document.querySelector('nav.js-repo-nav');
         if (anyNav) {
             anyNav.appendChild(button);
             return true;
         }
 
-        console.log('GitHub to DeepWiki Link: Could not find a suitable location to insert the button');
         return false;
     }
 })();
