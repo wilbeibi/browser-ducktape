@@ -12,6 +12,8 @@ misc/test_github_tab_title.js
   s_9306dff0e5ed23::t_24252fd761dc90 1-64
 README.md
   s_9306dff0e5ed23::t_1040da42c3fdbe 47
+misc/package.json
+  s_9306dff0e5ed23::t_8c16bd5a91095e 6
 ---
 {
   "schema_version": "authorship/3.0.0",
