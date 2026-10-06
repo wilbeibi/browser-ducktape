@@ -1,0 +1,19 @@
+github_tab_title.user.js
+  s_9306dff0e5ed23::t_a10040c27cb428 3,196,201,277,280,286,289,292-293,304
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1763eaf1e9e5029c66ad957ba96405853dfabeaf",
+  "prompts": {},
+  "sessions": {
+    "s_9306dff0e5ed23": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a11210-c95d-71f1-95e5-7bf5241f4c34",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Hongyi Shen <wilbeibi@gmail.com>"
+    }
+  }
+}
