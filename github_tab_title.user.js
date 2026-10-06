@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         GitHub - Front-Loaded Tab Title
-// @version      1.0.0
+// @version      1.1.0
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
 // @license      MIT
@@ -11,6 +11,8 @@
 // @description  Puts the identifying part of a GitHub page - issue or PR number, file name - at the front of the tab title
 // @match        *://github.com/*
 // @grant        GM_info
+// @grant        GM_addStyle
+// @grant        GM_registerMenuCommand
 // @run-at       document-start
 // ==/UserScript==
 
@@ -42,6 +44,52 @@
   const UNREAD_PREFIX = /^\(\d+\)\s*/;   // GitHub's unread-notification badge
   const BY_AUTHOR = / by [\w.-]+$/;      // trails PR titles; logins never contain spaces
   const DEFAULT_REF = /^(?:main|master|HEAD|[0-9a-f]{7,40})$/;
+  const COLORS = ['🟥', '🟧', '🟨', '🟩', '🟦', '🟪'];
+  const DEFAULT_MARKS = [
+    { label: 'Pending Review', color: '🟨' },
+    { label: 'WIP', color: '🟦' },
+    { label: 'Waiting for me', color: '🟥' },
+    { label: 'Read later', color: '🟪' },
+  ];
+  const CONFIG_KEY = 'github-tab-title:marks';
+  const TAB_KEY = 'github-tab-title:mark';
+  let marks = readMarks();
+  let selected = sessionStorage.getItem(TAB_KEY);
+  let lastMarker = '';
+  let picker;
+  let button;
+
+  function readMarks() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(CONFIG_KEY));
+      if (Array.isArray(saved) && saved.length === DEFAULT_MARKS.length
+          && saved.every((item) => typeof item.label === 'string' && item.label.trim()
+            && COLORS.includes(item.color))) return saved;
+    } catch { /* Use the defaults if storage was cleared or damaged. */ }
+    return DEFAULT_MARKS.map((item) => ({ ...item }));
+  }
+
+  function marker() {
+    const mark = marks[Number(selected)];
+    return selected !== null && mark ? `${mark.color} ` : '';
+  }
+
+  function unmarkTitle(title) {
+    const badge = title.match(UNREAD_PREFIX)?.[0] || '';
+    const rest = title.slice(badge.length);
+    return badge + (lastMarker && rest.startsWith(lastMarker)
+      ? rest.slice(lastMarker.length) : rest);
+  }
+
+  function selectMark(index) {
+    selected = index === null ? null : String(index);
+    if (selected === null) sessionStorage.removeItem(TAB_KEY);
+    else sessionStorage.setItem(TAB_KEY, selected);
+    if (button) button.textContent = marker().trim() || '□';
+    if (picker) picker.remove();
+    picker = null;
+    apply();
+  }
 
   const RULES = [
     // Issues, pull requests, discussions -> "#123 Title · repo"
@@ -116,24 +164,151 @@
   }
 
   function apply() {
+    if (document.body && (!button || !button.isConnected)) addControl();
     const path = location.pathname;
     for (const rule of RULES) {
       const match = path.match(rule.path);
       if (!match) continue;
 
-      const badge = document.title.match(UNREAD_PREFIX)?.[0] || '';
-      const bare = document.title.replace(UNREAD_PREFIX, '');
-      const built = rule.build(match, subjectOf(document.title), bare);
+      const unmarked = unmarkTitle(document.title);
+      const badge = unmarked.match(UNREAD_PREFIX)?.[0] || '';
+      const bare = unmarked.replace(UNREAD_PREFIX, '');
+      const built = rule.build(match, subjectOf(unmarked), bare);
       if (!built || !built[0]) return;
 
       // Re-entrancy: the subject is read back from a title this script already wrote, so
       // each build() strips its own prefix before re-adding it. That makes apply()
       // idempotent, and the poll a cheap no-op once the title is settled.
-      const next = badge + built.filter(Boolean).join(SEPARATOR);
+      const prefix = marker();
+      const next = badge + prefix + built.filter(Boolean).join(SEPARATOR);
       if (next !== document.title) document.title = next;
+      lastMarker = prefix;
       return;
     }
+    // The marker belongs to the tab, including GitHub pages without a title rule.
+    const unmarked = unmarkTitle(document.title);
+    const badge = unmarked.match(UNREAD_PREFIX)?.[0] || '';
+    const next = badge + marker() + unmarked.slice(badge.length);
+    if (next !== document.title) document.title = next;
+    lastMarker = marker();
   }
+
+  function showPicker() {
+    if (picker && !picker.isConnected) picker = null;
+    if (picker) { picker.remove(); picker = null; return; }
+    picker = document.createElement('div');
+    picker.id = 'gtt-picker';
+    picker.setAttribute('role', 'dialog');
+    picker.setAttribute('aria-label', 'GitHub tab marker');
+    const heading = document.createElement('strong');
+    heading.textContent = 'Mark this tab';
+    picker.append(heading);
+
+    marks.forEach((mark, index) => {
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.textContent = `${mark.color} ${mark.label}${selected === String(index) ? ' ✓' : ''}`;
+      option.addEventListener('click', () => selectMark(index));
+      picker.append(option);
+    });
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.textContent = 'Clear marker';
+    clear.addEventListener('click', () => selectMark(null));
+    picker.append(clear);
+    const configure = document.createElement('button');
+    configure.type = 'button';
+    configure.textContent = 'Edit labels and colors…';
+    configure.addEventListener('click', showEditor);
+    picker.append(configure);
+    document.body.append(picker);
+  }
+
+  function showEditor() {
+    picker.replaceChildren();
+    const heading = document.createElement('strong');
+    heading.textContent = 'Edit marker meanings';
+    picker.append(heading);
+    const rows = marks.map((mark) => {
+      const row = document.createElement('div');
+      row.className = 'gtt-row';
+      const color = document.createElement('select');
+      color.setAttribute('aria-label', `Color for ${mark.label}`);
+      for (const choice of COLORS) {
+        const option = document.createElement('option');
+        option.value = choice;
+        option.textContent = choice;
+        color.append(option);
+      }
+      color.value = mark.color;
+      const label = document.createElement('input');
+      label.type = 'text';
+      label.maxLength = 40;
+      label.setAttribute('aria-label', `Label for ${mark.label}`);
+      label.value = mark.label;
+      row.append(color, label);
+      picker.append(row);
+      return { color, label };
+    });
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = 'Save';
+    save.addEventListener('click', () => {
+      if (rows.some(({ label }) => !label.value.trim())) return;
+      marks = rows.map(({ color, label }) => ({ color: color.value, label: label.value.trim() }));
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(marks));
+      picker.remove();
+      picker = null;
+      if (button) button.textContent = marker().trim() || '□';
+      apply();
+    });
+    picker.append(save);
+  }
+
+  function addControl() {
+    if (!document.body || (button && button.isConnected)) return;
+    button = document.createElement('button');
+    button.id = 'gtt-button';
+    button.type = 'button';
+    button.title = 'Mark this GitHub tab';
+    button.setAttribute('aria-label', 'Mark this GitHub tab');
+    button.textContent = marker().trim() || '□';
+    button.addEventListener('click', showPicker);
+    button.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      showPicker();
+    });
+    document.body.append(button);
+  }
+
+  GM_addStyle(`
+    #gtt-button { position:fixed; right:12px; bottom:12px; z-index:2147483646;
+      width:28px; height:28px; padding:0; border:1px solid #777; border-radius:6px;
+      background:#fff; color:#333; cursor:pointer; font-size:17px; }
+    #gtt-picker { position:fixed; right:12px; bottom:46px; z-index:2147483647;
+      min-width:215px; padding:10px; border:1px solid #777; border-radius:8px;
+      background:#fff; color:#222; box-shadow:0 4px 16px #0004; font:14px sans-serif; }
+    #gtt-picker strong { display:block; margin-bottom:6px; }
+    #gtt-picker button { display:block; width:100%; margin:3px 0; padding:5px;
+      text-align:left; color:#222; background:#fff; border:0; border-radius:4px; cursor:pointer; }
+    #gtt-picker button:hover { background:#eee; }
+    #gtt-picker .gtt-row { display:flex; gap:5px; margin:5px 0; }
+    #gtt-picker select { width:48px; }
+    #gtt-picker input { flex:1; min-width:0; }
+  `);
+
+  if (typeof GM_registerMenuCommand === 'function') {
+    GM_registerMenuCommand('Mark this GitHub tab', showPicker);
+  }
+  window.addEventListener('storage', (event) => {
+    if (event.key !== CONFIG_KEY) return;
+    marks = readMarks();
+    if (button) button.textContent = marker().trim() || '□';
+    if (picker) { picker.remove(); picker = null; }
+    apply();
+  });
+  if (document.body) addControl();
+  else document.addEventListener('DOMContentLoaded', addControl, { once: true });
 
   // Poll rather than hook history.pushState: GitHub's script-src blocks the page-context
   // injection that hooking would need (see AGENTS.md), and Turbo navigation rewrites the

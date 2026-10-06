@@ -44,6 +44,7 @@ Closes duplicate tabs across browser windows. Apparently the same page did not n
 
 **GitHub Tab Title** — [Install](https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/github_tab_title.user.js) · [Source](github_tab_title.user.js)
 Rewrites GitHub tab titles as `#123 Fix login redirect · repo`, so a crowded tab strip still tells you which issue, PR, file, or commit each tab is.
+Use the userscript menu or the small square on the page to mark the current tab as Pending Review, WIP, Waiting for me, or Read later. Edit their labels and colors in the picker.
 
 **GitHub to DeepWiki Link** — [Install](https://raw.githubusercontent.com/wilbeibi/browser-ducktape/main/deepwiki_on_github.user.js) · [Source](deepwiki_on_github.user.js)
 Gets you from a GitHub repository to its DeepWiki explanation without the usual copy, paste, and minor sigh.

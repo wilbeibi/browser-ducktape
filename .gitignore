@@ -13,4 +13,5 @@ misc/*
 !misc/lint_headers.js
 !misc/test_duplicate_tabs_closer.js
 !misc/test_deepwiki.js
+!misc/test_github_tab_title.js
 !misc/manual_sweep_check.js
