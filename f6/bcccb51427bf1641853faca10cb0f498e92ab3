@@ -1,0 +1,33 @@
+.gitignore
+  s_9306dff0e5ed23::t_926370d3f6b5d1 15
+github_tab_title.user.js
+  s_9306dff0e5ed23::t_f3aed3b55350e1 303-309
+  s_9306dff0e5ed23::t_a6eb28b32d60ae 3,14-15,47-92
+  s_9306dff0e5ed23::t_4c459fd2c628d4 197
+  s_9306dff0e5ed23::t_1040da42c3fdbe 191
+  s_9306dff0e5ed23::t_ae9464110c7b06 167,188-190,192-193,269
+  s_9306dff0e5ed23::t_f0dcbde1c3bdb0 183
+  s_9306dff0e5ed23::t_dfda4d1995704f 173-176,182,185,194-196,198-268,270-301,310-311
+misc/package.json
+  s_9306dff0e5ed23::t_24252fd761dc90 6
+misc/test_github_tab_title.js
+  s_9306dff0e5ed23::t_24252fd761dc90 1-64
+README.md
+  s_9306dff0e5ed23::t_1040da42c3fdbe 47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f6bcccb51427bf1641853faca10cb0f498e92ab3",
+  "prompts": {},
+  "sessions": {
+    "s_9306dff0e5ed23": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a11210-c95d-71f1-95e5-7bf5241f4c34",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Hongyi Shen <wilbeibi@gmail.com>"
+    }
+  }
+}
