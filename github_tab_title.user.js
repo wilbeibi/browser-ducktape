@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         GitHub - Front-Loaded Tab Title
-// @version      1.1.0
+// @version      1.1.1
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
 // @license      MIT
@@ -193,11 +193,12 @@
     lastMarker = marker();
   }
 
-  function showPicker() {
+  function showPicker(source) {
     if (picker && !picker.isConnected) picker = null;
     if (picker) { picker.remove(); picker = null; return; }
     picker = document.createElement('div');
     picker.id = 'gtt-picker';
+    picker.className = source === 'menu' ? 'gtt-from-menu' : 'gtt-from-button';
     picker.setAttribute('role', 'dialog');
     picker.setAttribute('aria-label', 'GitHub tab marker');
     const heading = document.createElement('strong');
@@ -273,21 +274,23 @@
     button.title = 'Mark this GitHub tab';
     button.setAttribute('aria-label', 'Mark this GitHub tab');
     button.textContent = marker().trim() || '□';
-    button.addEventListener('click', showPicker);
+    button.addEventListener('click', () => showPicker('button'));
     button.addEventListener('contextmenu', (event) => {
       event.preventDefault();
-      showPicker();
+      showPicker('button');
     });
     document.body.append(button);
   }
 
   GM_addStyle(`
-    #gtt-button { position:fixed; right:12px; bottom:12px; z-index:2147483646;
+    #gtt-button { position:fixed; left:12px; top:72px; z-index:2147483646;
       width:28px; height:28px; padding:0; border:1px solid #777; border-radius:6px;
       background:#fff; color:#333; cursor:pointer; font-size:17px; }
-    #gtt-picker { position:fixed; right:12px; bottom:46px; z-index:2147483647;
+    #gtt-picker { position:fixed; z-index:2147483647;
       min-width:215px; padding:10px; border:1px solid #777; border-radius:8px;
       background:#fff; color:#222; box-shadow:0 4px 16px #0004; font:14px sans-serif; }
+    #gtt-picker.gtt-from-button { left:46px; top:72px; }
+    #gtt-picker.gtt-from-menu { right:12px; top:12px; }
     #gtt-picker strong { display:block; margin-bottom:6px; }
     #gtt-picker button { display:block; width:100%; margin:3px 0; padding:5px;
       text-align:left; color:#222; background:#fff; border:0; border-radius:4px; cursor:pointer; }
@@ -298,7 +301,7 @@
   `);
 
   if (typeof GM_registerMenuCommand === 'function') {
-    GM_registerMenuCommand('Mark this GitHub tab', showPicker);
+    GM_registerMenuCommand('Mark this GitHub tab', () => showPicker('menu'));
   }
   window.addEventListener('storage', (event) => {
     if (event.key !== CONFIG_KEY) return;
