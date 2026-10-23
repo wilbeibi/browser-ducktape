@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Inline Article Translator (LLM)
-// @version      1.11.5
+// @version      1.12.0
 // @description  Immersive-Translate-style bilingual inline translation powered by any OpenAI-compatible LLM API. Streams results, prioritizes the paragraph you're reading, prefetches the rest of the article, select-to-translate (划词翻译), caches locally. Supports ChatGPT / Claude / Gemini answers and deep-research reports, translating each paragraph as it settles.
 // @author       wilbeibi
 // @namespace    https://github.com/wilbeibi/browser-ducktape
@@ -232,6 +232,8 @@ Rules:
     display: block;
     margin: 0 0 1em;
 }
+/* blank-line paragraphs (x.com posts): keep the source's "a)\nb)" lines */
+.llmtr-para > .llmtr { white-space: pre-line; }
 .llmtr-loading {
     opacity: 0.45;
     animation: llmtr-pulse 1.2s ease-in-out infinite;
@@ -567,8 +569,29 @@ html.llmtr-hide .llmtr { display: none; }
             el.matches(MATH_SELECTOR);
     }
 
+    // A <div> is a block by tag only. React Native Web (x.com) renders every
+    // inline View as <div style="display:inline-flex"> — each @mention in a
+    // post — and calling that a block made the post body a non-leaf, so every
+    // <span> between two mentions was translated as its own sentence fragment.
+    // Ask the renderer, but only about <div>: that is the tag frameworks reuse
+    // for inline boxes, and <li>/<p> keep their tag semantics. inline-block is
+    // left out on purpose — it is how pre-flexbox pages lay out card grids,
+    // and each card is still a paragraph of its own.
+    const INLINE_DISPLAY = new Set(['inline', 'inline-flex', 'inline-grid']);
+
+    function isInlineDiv(el) {
+        return el.tagName === 'DIV' && INLINE_DISPLAY.has(window.getComputedStyle(el).display);
+    }
+
+    // querySelector first: collect() and the prose gate call this on every
+    // element, and the first match is nearly always a real block. Only a leading
+    // inline <div> (a mention, whose subtree is tiny) pays for the full list.
     function hasBlockChild(el) {
-        return el.querySelector(BLOCKY_SELECTOR) !== null;
+        const first = el.querySelector(BLOCKY_SELECTOR);
+        if (!first) return false;
+        if (!isInlineDiv(first)) return true;
+        for (const b of el.querySelectorAll(BLOCKY_SELECTOR)) if (!isInlineDiv(b)) return true;
+        return false;
     }
 
     // A node that interrupts a run of inline content: it either is a block-level
@@ -576,7 +599,7 @@ html.llmtr-hide .llmtr { display: none; }
     // the browser has already broken the inline flow around it.
     function isBlockRun(node) {
         return node.nodeType === 1 &&
-            (node.matches(BLOCKY_SELECTOR) || node.querySelector(BLOCKY_SELECTOR) !== null);
+            ((node.matches(BLOCKY_SELECTOR) && !isInlineDiv(node)) || hasBlockChild(node));
     }
 
     // Where NOT to lift loose text into a <div> wrapper. CSS table fixup would
@@ -654,9 +677,8 @@ html.llmtr-hide .llmtr { display: none; }
         return (el.textContent || '').trim();
     }
 
-    function qualifies(el) {
+    function qualifies(el, text = renderedText(el)) {
         if (el.closest('[contenteditable="true"]')) return false;
-        const text = renderedText(el);
         if (text.length < MIN_TEXT_LEN) return false;
         // Nothing to translate in a block that is only a formula: the <div>
         // wrapping a display equation reads as words ('reward', 'efficiency
@@ -702,7 +724,9 @@ html.llmtr-hide .llmtr { display: none; }
             } else {
                 if (!el.dataset.llmtrSeen) {
                     el.dataset.llmtrSeen = '1';
-                    if (qualifies(el)) out.push(el);
+                    const paras = blankLineParagraphs(el);
+                    if (paras) out.push(...markParagraphs(paras));
+                    else if (qualifies(el)) out.push(el);
                 }
                 return;
             }
@@ -799,6 +823,64 @@ html.llmtr-hide .llmtr { display: none; }
             else if (n.nodeType === 3 && !/\S/.test(n.nodeValue)) host.removeChild(n);
         }
         return true;
+    }
+
+    // A text leaf laid out with preserved newlines can hold its paragraphs as
+    // blank lines in the text itself, with no <br> or <p> to split on. That is
+    // how x.com renders a post — the whole thread-length body is one <span>
+    // under `white-space: pre-wrap` — so it used to get a single translation
+    // at the very bottom. Returns each paragraph's text and the (node, offset)
+    // where it ends, or null when there are fewer than two paragraphs.
+    const PRESERVES_NEWLINES = new Set(['pre', 'pre-wrap', 'pre-line', 'break-spaces']);
+    const BLANK_LINE = /\n(?:[^\S\n]*\n)+/g;
+
+    function blankLineParagraphs(el) {
+        if (!PRESERVES_NEWLINES.has(window.getComputedStyle(el).whiteSpace)) return null;
+        const cuts = [];
+        (function scan(node) {
+            for (let c = node.firstChild; c; c = c.nextSibling) {
+                if (c.nodeType === 3) {
+                    // cut after the run's first newline, not before the run:
+                    // "P1\n" then ends its own line, the translation block
+                    // follows, and "\nP2" keeps the blank line under it
+                    for (const m of c.nodeValue.matchAll(BLANK_LINE)) cuts.push([c, m.index + 1]);
+                } else if (c.nodeType === 1 && !isSkipped(c)) {
+                    scan(c);
+                }
+            }
+        })(el);
+        if (!cuts.length) return null;
+        const bounds = [[el, 0], ...cuts, [el, el.childNodes.length]];
+        const paras = [];
+        for (let i = 1; i < bounds.length; i++) {
+            const r = document.createRange();
+            r.setStart(...bounds[i - 1]);
+            r.setEnd(...bounds[i]);
+            const text = r.toString().trim();
+            if (/\p{L}/u.test(text)) paras.push({ text, end: bounds[i] });
+        }
+        return paras.length >= 2 ? paras : null;
+    }
+
+    // Give each paragraph an empty inline <span> at its end to translate into.
+    // The pipeline wants an element per block; wrapping each paragraph in one
+    // would mean moving React's own <span>s, and React's next insertBefore or
+    // removeChild on the post then throws and takes the timeline down with it.
+    // Splitting text nodes is survivable: a re-render just resets the post.
+    function markParagraphs(paras) {
+        const marks = [];
+        // back to front: splitting a text node shifts every offset after the cut
+        for (let i = paras.length - 1; i >= 0; i--) {
+            const m = document.createElement('span');
+            m.className = 'llmtr-para';
+            if (!qualifies(m, paras[i].text)) continue;
+            m.dataset.llmtrSeen = '1';
+            const [node, offset] = paras[i].end;
+            if (node.nodeType === 3) node.parentNode.insertBefore(m, node.splitText(offset));
+            else node.appendChild(m);
+            marks.push(m);
+        }
+        return marks.reverse();
     }
 
     // ==========================================
@@ -1218,6 +1300,21 @@ html.llmtr-hide .llmtr { display: none; }
     ];
     const CHAT = CHAT_PROFILES.find(p => p.test.test(location.hostname)) || null;
 
+    // Feeds whose prose is a minority of the page text. On an x.com timeline
+    // the generic collector found 71 blocks and 8 of them were posts: the
+    // rest were display names, @handles, "Quote" labels and sidebar trends,
+    // each sent to the API and given a translation line. Unlike CHAT there is
+    // no whole-page fallback when the roots are absent — on x.com that is
+    // every route change, while the column is empty and the sidebar is not.
+    const SITE_PROFILES = [
+        {
+            test: /(^|\.)x\.com$|(^|\.)twitter\.com$/,
+            roots: '[data-testid="tweetText"], [data-testid="UserDescription"], ' +
+                '[data-testid="twitter-article-title"], [data-testid="twitterArticleRichTextView"]',
+        },
+    ];
+    const SITE = SITE_PROFILES.find(p => p.test.test(location.hostname)) || null;
+
     const SETTLE_MS = 1200;
     const settleWatch = new Map(); // el -> { len, ts }
     let settleTimer = null;
@@ -1261,9 +1358,11 @@ html.llmtr-hide .llmtr { display: none; }
         // On chat hosts, scope to assistant turns — but if those selectors find
         // nothing (the app renamed its classes, or no answer has rendered yet),
         // fall back to the whole page so a selector change degrades to the
-        // generic behavior instead of a dead button.
-        const roots = CHAT ? document.querySelectorAll(CHAT.roots) : [];
-        const targets = roots.length ? roots : [document.body];
+        // generic behavior instead of a dead button. Site profiles never fall
+        // back: their page always has chrome and only sometimes has prose.
+        const profile = CHAT || SITE;
+        const roots = profile ? document.querySelectorAll(profile.roots) : [];
+        const targets = roots.length || SITE ? roots : [document.body];
         for (const root of targets) collect(root, found);
         for (const el of found) { allBlocks.push(el); io.observe(el); }
     }
@@ -2190,7 +2289,10 @@ Rules:
             // because Ctrl+T is bound earlier in init() the result was a script
             // that translated fine but could never show its own button.
             try {
-                looksGood = CHAT || pageLooksTranslatable();
+                // posts are too short for the prose gate, so a timeline of
+                // them never cleared it; the roots say what the page is
+                looksGood = CHAT || (SITE ? !!document.querySelector(SITE.roots)
+                    : pageLooksTranslatable());
             } catch (e) {
                 console.warn('[llmtr] translatability check failed:', e);
             }

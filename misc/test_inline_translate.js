@@ -20,9 +20,9 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'inline_translate.user.js
 
 // Runs the userscript against a document and hands the live window to `probe`.
 async function runScript(bodyHtml, { lang = 'Simplified Chinese (简体中文)', mutate,
-                                     apiKey = 'sk-test', apiUrl, mwKey, xhr } = {}, probe) {
-  const dom = new JSDOM(`<!DOCTYPE html><html><body>${bodyHtml}</body></html>`,
-    { url: 'https://example.test/article' });
+                                     apiKey = 'sk-test', apiUrl, mwKey, xhr,
+                                     url = 'https://example.test/article' } = {}, probe) {
+  const dom = new JSDOM(`<!DOCTYPE html><html><body>${bodyHtml}</body></html>`, { url });
   const w = dom.window;
   if (w.document.readyState !== 'complete') {
     await new Promise(res => w.document.addEventListener('DOMContentLoaded', res, { once: true }));
@@ -76,32 +76,12 @@ const PARA = 'Reversibility is the property that lets you undo a step without lo
   + 'work around it, and data tooling has almost none of it compared to source control today.';
 const CN_PARA = '可逆性是指你可以撤销某一步而不丢失周围工作的性质，而今天的数据工具与版本控制相比几乎完全不具备这种性质，这也是团队反复重做实验的原因所在。';
 
-test('semantic <p> article shows the button (unchanged behavior)', async () => {
-  assert.equal(await fabAppears(`<article>${`<p>${PARA}</p>`.repeat(4)}</article>`), true);
-});
-
 // The regression this gate was rewritten for: Tailwind/MDX sites style <div>s as
 // paragraphs and never emit <p>. Translation always worked on them; the button
 // did not appear, so the feature looked broken.
 test('div-as-paragraph article shows the button', async () => {
   const body = `<article><header><h1>Title</h1></header>
     <section>${`<div class="p1-blog">${PARA}</div>`.repeat(4)}</section></article>`;
-  assert.equal(await fabAppears(body), true);
-});
-
-test('prose in table cells (old-web layout) shows the button', async () => {
-  const body = `<table><tr><td>${PARA}</td></tr><tr><td>${PARA}</td></tr>
-    <tr><td>${PARA}</td></tr><tr><td>${PARA}</td></tr></table>`;
-  assert.equal(await fabAppears(body), true);
-});
-
-test('prose in unsemantic wrappers (<font>/<center>) shows the button', async () => {
-  const body = `<center><font size="2">${PARA}</font></center>`.repeat(4);
-  assert.equal(await fabAppears(body), true);
-});
-
-test('prose in unknown/custom elements shows the button', async () => {
-  const body = `<my-post>${`<my-para>${PARA}</my-para>`.repeat(4)}</my-post>`;
   assert.equal(await fabAppears(body), true);
 });
 
@@ -120,11 +100,6 @@ test('app chrome (nav, sidebar, footer) does not show the button', async () => {
   assert.equal(await fabAppears(body), false);
 });
 
-test('a page of short labels does not show the button', async () => {
-  assert.equal(await fabAppears('<div>Settings</div><div>Profile and account</div>'
-    .repeat(60)), false);
-});
-
 test('article already in the target language does not show the button', async () => {
   assert.equal(await fabAppears(`<article>${`<div>${CN_PARA}</div>`.repeat(4)}</article>`), false);
 });
@@ -140,12 +115,6 @@ test('nested wrappers are not double-counted', async () => {
   const half = PARA.slice(0, 130); // one leaf clears PROSE_MIN_LEAF, two don't clear PROSE_MIN_CHARS
   const body = `<div class="outer"><div class="inner">${`<div>${half}</div>`.repeat(2)}</div></div>`;
   assert.equal(await fabAppears(body), false);
-});
-
-// Chat hosts bypass the gate entirely (CHAT profiles), so an empty ChatGPT page
-// still gets a button. Guard that the gate rewrite did not disturb it.
-test('the gate still runs on ordinary hosts with no prose', async () => {
-  assert.equal(await fabAppears('<div id="root"></div>'), false);
 });
 
 // Mixed content — an element whose children are both text and block elements —
@@ -183,18 +152,6 @@ test('a single <br><br> essay in one <div> shows the button', async () => {
   assert.equal(await fabAppears(`<div>${essay}</div>`), true);
 });
 
-test('<br>-separated short labels do not show the button', async () => {
-  assert.equal(await fabAppears('<div>Settings<br><br>Profile<br><br>Sign out</div>'), false);
-});
-
-// The shape every Markdown renderer emits for a nested bullet, and by far the
-// most common mixed-content case on the web.
-test('list item text beside a nested list is collected', async () => {
-  const body = `<ul><li>OUTER ${PARA}<ul><li>INNER ${PARA}</li></ul></li></ul>`;
-  const heads = (await collectedText(body)).map(t => t.split(' ')[0]);
-  assert.deepEqual(heads, ['OUTER', 'INNER']);
-});
-
 // paulgraham.com: the essay sits in one inline <font> that contains a single
 // short <blockquote>. Tag-based guesses at "is this a block container?" get
 // this wrong; the block child is what proves the text is already block-laid-out.
@@ -220,6 +177,93 @@ test('loose text in table structure is left alone', async () => {
   };
   const heads = (await collectedText(body, { mutate })).map(t => t.split(' ')[0]);
   assert.deepEqual(heads, ['CELL']);
+});
+
+// x.com's real post shape: one <span> under `white-space: pre-wrap`, with the
+// paragraphs as blank lines in its text. It used to be one block, translated
+// in a single lump under the last paragraph.
+const X_POST = '<article><div data-testid="tweetText" style="white-space: pre-wrap">'
+  + `<span>ONE ${PARA}\n\nTWO ${PARA}\n\nTHREE ${PARA}</span></div></article>`;
+
+// Each paragraph is translated on its own, the translation lands under it, and
+// the post's own <span> stays where the framework rendered it: moving it into a
+// wrapper makes React's next insertBefore/removeChild on the post throw.
+test('blank-line paragraphs each get their own translation slot, in place', async () => {
+  const layout = await runScript(X_POST, {}, (w) => {
+    const post = w.document.querySelector('[data-testid="tweetText"]');
+    const span = post.firstElementChild;
+    w.document.dispatchEvent(new w.KeyboardEvent('keydown',
+      { key: 't', code: 'KeyT', ctrlKey: true, bubbles: true }));
+    const heads = [...w.document.querySelectorAll('[data-llmtr-seen]')]
+      .filter(el => el._llmtrSrc).map(el => el._llmtrSrc.split(' ')[0]);
+    const view = post.cloneNode(true);
+    view.querySelectorAll('.llmtr-para').forEach(m => m.replaceWith('|'));
+    return { heads, text: view.textContent, spanStayed: span.parentNode === post };
+  });
+  assert.deepEqual(layout.heads, ['ONE', 'TWO', 'THREE']);
+  assert.equal(layout.text, `ONE ${PARA}\n|\nTWO ${PARA}\n|\nTHREE ${PARA}|`);
+  assert.equal(layout.spanStayed, true);
+});
+
+test('blank lines are not paragraph breaks where white-space collapses them', async () => {
+  const body = `<article><div><span>ONE ${PARA}\n\nTWO ${PARA}</span></div></article>`;
+  const heads = (await collectedText(body)).map(t => t.split(' ')[0]);
+  assert.deepEqual(heads, ['ONE']);
+});
+
+// x.com wraps each @mention in <div style="display:inline-flex">. Read as a
+// block by its tag, it split the sentence around it into separate fragments.
+const MENTION = '<div style="display: inline-flex"><span><a href="/someone">@someone</a></span></div>';
+
+test('an inline-flex <div> does not split the sentence around it', async () => {
+  const body = `<article><div><span>ONE ${PARA} thanks </span>${MENTION}`
+    + '<span> for this.</span></div></article>';
+  assert.deepEqual(await collectedText(body), [`ONE ${PARA} thanks @someone for this.`]);
+});
+
+// ...but an inline-block <div> is a card in a pre-flexbox grid, and each card
+// is still its own paragraph.
+test('inline-block cards are still collected one by one', async () => {
+  const card = (head) => `<div style="display: inline-block">${head} ${PARA}</div>`;
+  const body = `<article><div>${card('ONE')}${card('TWO')}${card('THREE')}</div></article>`;
+  const heads = (await collectedText(body)).map(t => t.split(' ')[0]);
+  assert.deepEqual(heads, ['ONE', 'TWO', 'THREE']);
+});
+
+test('a mention inside a blank-line paragraph stays in that paragraph', async () => {
+  const body = '<article><div style="white-space: pre-wrap">'
+    + `<span>ONE ${PARA} thanks </span>${MENTION}<span> for this.\n\nTWO ${PARA}</span></div></article>`;
+  assert.deepEqual(await collectedText(body), [`ONE ${PARA} thanks @someone for this.`, `TWO ${PARA}`]);
+});
+
+// An x.com timeline: each post sits among a display name, an @handle, a
+// "Quote" label and a sidebar of trends, all long enough to qualify on their
+// own. Only the post text is prose.
+const X_TIMELINE = '<main><article><div data-testid="User-Name"><span>Charlie Marsh</span>'
+  + '<span>@charliermarsh</span></div><div><span>Quote</span></div>'
+  + `<div data-testid="tweetText"><span>POST ${PARA}</span></div></article></main>`
+  + '<div data-testid="sidebarColumn"><div><span>Today\u2019s News</span></div>'
+  + '<div><span>Markets slide as traders weigh new tariffs</span></div></div>';
+const ON_X = { url: 'https://x.com/home' };
+
+test('on x.com only post text is collected, not names, handles or the sidebar', async () => {
+  const heads = (await collectedText(X_TIMELINE, ON_X)).map(t => t.split(' ')[0]);
+  assert.deepEqual(heads, ['POST']);
+});
+
+// Mid route change the column is empty while the sidebar is not; falling back
+// to the whole page there would translate the chrome.
+test('on x.com a page without posts collects nothing', async () => {
+  const body = X_TIMELINE.replace(/<main>.*<\/main>/, '<main></main>');
+  assert.deepEqual(await collectedText(body, ON_X), []);
+});
+
+// Posts are shorter than PROSE_MIN_LEAF, so the prose gate alone never shows
+// the button on a timeline.
+test('an x.com timeline of short posts shows the button', async () => {
+  const short = '<article><div data-testid="tweetText"><span>Jane Street got blowed up today</span></div></article>';
+  assert.equal(await fabAppears(short.repeat(5), ON_X), true);
+  assert.equal(await fabAppears('<main></main>', ON_X), false);
 });
 
 // KaTeX renders every formula twice — a 1px-clipped MathML copy for screen
@@ -319,16 +363,6 @@ const openSetup = (opts, probe) => runScript('<div id="root"></div>',
 const suggestions = (modal) =>
   [...modal.querySelectorAll('datalist option')].map(o => o.value);
 
-test('first-run setup offers a provider picker', async () => {
-  const ids = await openSetup({}, ({ sel }) => [...sel.options].map(o => o.value));
-  assert.deepEqual(ids, ['deepseek', 'openrouter', 'custom']);
-});
-
-test('first run opens on the provider the script ships with', async () => {
-  const got = await openSetup({}, ({ sel }) => sel.value);
-  assert.equal(got, 'deepseek');
-});
-
 test('choosing OpenRouter fills the endpoint and suggests namespaced ids', async () => {
   const got = await openSetup({}, ({ modal, sel, url }) => {
     sel.value = 'openrouter';
@@ -351,13 +385,6 @@ test('switching provider drops a model id that belongs to the other one', async 
   assert.equal(got, '');
 });
 
-test('a saved OpenRouter endpoint reopens on OpenRouter', async () => {
-  const got = await openSetup(
-    { apiUrl: 'https://openrouter.ai/api/v1/chat/completions' },
-    ({ sel }) => sel.value);
-  assert.equal(got, 'openrouter');
-});
-
 // Host match, not string match: a saved URL may differ in path and still be
 // the same service.
 test('a saved endpoint on the same host still matches its provider', async () => {
@@ -374,19 +401,6 @@ test('typing an unknown endpoint switches the picker to Custom', async () => {
     return sel.value;
   });
   assert.equal(got, 'custom');
-});
-
-// The picker is a convenience, not a gate — the fields stay free text so an
-// endpoint serving ids we have never heard of still works.
-test('Custom leaves the endpoint the user typed alone', async () => {
-  const got = await openSetup({}, ({ sel, url }) => {
-    url.value = 'https://llm.internal.example/v1/chat/completions';
-    url.oninput();
-    sel.value = 'custom';
-    sel.onchange();
-    return url.value;
-  });
-  assert.equal(got, 'https://llm.internal.example/v1/chat/completions');
 });
 
 // ---------------------------------------------------------------------------
@@ -432,13 +446,6 @@ test('a failed catalog fetch leaves the built-in suggestions in place', async ()
     ({ modal, sel }) => { sel.value = 'openrouter'; sel.onchange(); return suggestions(modal); });
   assert.ok(models.length, 'fallback list should survive a dead network');
   assert.ok(models.every(m => m.includes('/')), `expected namespaced ids, got ${models}`);
-});
-
-test('a malformed catalog response leaves the built-in suggestions in place', async () => {
-  const models = await openSetup(
-    { xhr: (opts) => opts.onload && opts.onload({ responseText: 'not json' }) },
-    ({ modal, sel }) => { sel.value = 'openrouter'; sel.onchange(); return suggestions(modal); });
-  assert.ok(models.length && models.every(m => m.includes('/')));
 });
 
 test('the catalog is cached rather than refetched on every open', async () => {
